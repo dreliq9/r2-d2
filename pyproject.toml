@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "swu-mcp"
+version = "0.1.0"
+description = "Star Wars Unlimited MCP server with card search, lookup, randomization, and image tools."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "fastmcp==3.2.3",
+  "httpx>=0.28.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.5",
+]
+
+[project.scripts]
+swu-mcp = "swu_mcp.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/swu_mcp"]
+
+[tool.hatch.build.targets.wheel.sources]
+src = ""
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

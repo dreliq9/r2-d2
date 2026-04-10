@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.swu-mcp-cache/
+dist/
+build/
+*.pyc
+data/catalog/
+qa_hard_run/
