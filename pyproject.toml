@@ -3,10 +3,11 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "swu-mcp"
-version = "0.1.0"
-description = "Star Wars Unlimited MCP server with card search, lookup, randomization, and image tools."
+name = "r2-d2"
+version = "0.2.0"
+description = "Star Wars Unlimited MCP server — card search, deck building, format validation, meta analysis, and two-player game simulation."
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
   "fastmcp==3.2.3",
@@ -19,7 +20,7 @@ dev = [
 ]
 
 [project.scripts]
-swu-mcp = "swu_mcp.server:main"
+r2-d2 = "swu_mcp.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/swu_mcp"]

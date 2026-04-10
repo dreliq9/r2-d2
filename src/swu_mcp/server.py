@@ -7,11 +7,11 @@ from .deck_service import DeckService
 from .game_service import GameService
 
 mcp = FastMCP(
-    name="SWU-MCP",
+    name="r2-d2",
     instructions=(
         "Star Wars Unlimited MCP server. Use these tools to search cards, look up exact printings, "
         "fetch images, upload and playtest decks, validate formats, analyze lists, suggest cards, "
-        "and generate first-pass brews."
+        "generate first-pass brews, and simulate two-player games with AI opponents."
     ),
 )
 card_service = CardService()

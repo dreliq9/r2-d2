@@ -913,6 +913,28 @@ wheels = [
 ]
 
 [[package]]
+name = "r2-d2"
+version = "0.2.0"
+source = { editable = "." }
+dependencies = [
+    { name = "fastmcp" },
+    { name = "httpx" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastmcp", specifier = "==3.2.3" },
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.5" },
+]
+provides-extras = ["dev"]
+
+[[package]]
 name = "referencing"
 version = "0.37.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1071,28 +1093,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/81/69/17425771797c36cde
 wheels = [
     { url = "https://files.pythonhosted.org/packages/0b/c9/584bc9651441b4ba60cc4d557d8a547b5aff901af35bda3a4ee30c819b82/starlette-1.0.0-py3-none-any.whl", hash = "sha256:d3ec55e0bb321692d275455ddfd3df75fff145d009685eb40dc91fc66b03d38b", size = 72651, upload-time = "2026-03-22T18:29:45.111Z" },
 ]
-
-[[package]]
-name = "swu-mcp"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "fastmcp" },
-    { name = "httpx" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "fastmcp", specifier = "==3.2.3" },
-    { name = "httpx", specifier = ">=0.28.1" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.5" },
-]
-provides-extras = ["dev"]
 
 [[package]]
 name = "typing-extensions"

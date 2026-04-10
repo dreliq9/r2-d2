@@ -1,34 +1,40 @@
-# SWU-MCP
+# R2-D2
 
-`SWU-MCP` is a FastMCP-powered Star Wars Unlimited `stdio` server with three major capability areas:
+A Star Wars Unlimited MCP server built with [FastMCP](https://github.com/jlowin/fastmcp). Search cards, build decks, validate formats, analyze the meta, and simulate two-player games — all through Claude Code, Claude Desktop, or any MCP-compatible client.
 
-- `swu_search_cards`
-- `swu_lookup_card`
-- `swu_random_card`
-- `swu_get_image`
-- `swu_upload_deck`
-- `swu_draw_card`
-- `swu_view_hand`
-- `swu_view_board`
-- `swu_mulligan`
-- `swu_sideboard`
-- `swu_resource_phase`
-- `swu_play_card`
-- `swu_move_card`
-- `swu_set_card_state`
-- `swu_defeat_card`
-- `swu_validate_deck`
-- `swu_analyze_deck`
-- `swu_suggest_cards`
-- `swu_generate_deck`
-- `swu_export_deck`
-- `swu_start_game`
-- `swu_get_game_state`
-- `swu_get_legal_actions`
-- `swu_take_game_action`
-- `swu_take_ai_turn`
+Card data comes from the live [SWU DB API](https://www.swu-db.com/api) first and automatically falls back to the bundled local catalog when the API is unavailable.
 
-The MCP transport is `stdio`. Card data comes from the live [swu-db API](https://www.swu-db.com/api) first and can fall back to a local catalog JSON file when the network is unavailable.
+## Capabilities
+
+### Card Database
+| Tool | What it does |
+|------|-------------|
+| `swu_search_cards` | Natural text search with structured filters (aspect, trait, type, cost, etc.) |
+| `swu_lookup_card` | Exact lookup by name or set/number |
+| `swu_random_card` | Random card from a filtered pool |
+| `swu_get_image` | Front or back art URL for any card |
+
+### Deck Building
+| Tool | What it does |
+|------|-------------|
+| `swu_upload_deck` | Parse a decklist into a stateful session |
+| `swu_validate_deck` | Check legality for Premier or Twin Suns (leaders, base, copy limits, aspect penalties) |
+| `swu_analyze_deck` | Resource curve, aspect breakdown, synergy score, role analysis |
+| `swu_suggest_cards` | Targeted card suggestions for a stated goal or matchup |
+| `swu_generate_deck` | First-pass brew from a theme, leaders, and format |
+| `swu_export_deck` | Export a session to a shareable decklist |
+
+### Game Simulation
+| Tool | What it does |
+|------|-------------|
+| `swu_start_game` | Two-player setup with deck loading |
+| `swu_get_game_state` | Current board state, hand, resources, damage |
+| `swu_get_legal_actions` | Available actions with targeting options |
+| `swu_take_game_action` | Execute an action (play, attack, pass, etc.) |
+| `swu_take_ai_turn` | Let the AI pilot take a full turn |
+| `swu_draw_card` / `swu_view_hand` / `swu_view_board` | Card management |
+| `swu_play_card` / `swu_move_card` / `swu_defeat_card` / `swu_set_card_state` | Direct board manipulation |
+| `swu_mulligan` / `swu_resource_phase` / `swu_sideboard` | Phase management |
 
 ## Quick Start
 
@@ -37,16 +43,18 @@ uv sync
 uv run python scripts/start_stdio.py
 ```
 
-## Claude Desktop Config
+## Claude Code / Claude Desktop Config
+
+Add to `~/.mcp.json`:
 
 ```json
 {
   "mcpServers": {
-    "swu-mcp": {
+    "r2-d2": {
       "command": "uv",
       "args": [
         "--directory",
-        "/Users/adamsteen/Desktop/SWU-MCP codename Hyperspeed",
+        "/path/to/r2-d2",
         "run",
         "python",
         "scripts/start_stdio.py"
@@ -56,52 +64,53 @@ uv run python scripts/start_stdio.py
 }
 ```
 
-## Optional Offline Catalog
+## Offline Catalog
 
-Build a local catalog snapshot for API fallback:
+A bundled card catalog (`data/catalog/cards.json`) is auto-discovered at startup. The server uses it as a fallback whenever the live API is unavailable — no configuration needed.
+
+To rebuild the catalog from the latest API data:
 
 ```bash
 uv run python scripts/build_catalog.py
 ```
 
-Then point the server at it:
-
-```bash
-export SWU_MCP_CARD_CATALOG_PATH=/Users/adamsteen/Desktop/SWU-MCP\ codename\ Hyperspeed/data/catalog/cards.json
-uv run python scripts/start_stdio.py
-```
-
 ## Environment Variables
 
-- `SWU_MCP_API_BASE_URL` defaults to `https://api.swu-db.com`
-- `SWU_MCP_CARD_CATALOG_PATH` points to a local JSON fallback file
-- `SWU_MCP_CACHE_DIR` defaults to `.swu-mcp-cache`
-- `SWU_MCP_DEFAULT_LIMIT` defaults to `10`
+All optional — sensible defaults are built in.
 
-## Notes
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `SWU_MCP_API_BASE_URL` | `https://api.swu-db.com` | Live card data API |
+| `SWU_MCP_CARD_CATALOG_PATH` | Auto-discovered from `data/catalog/` | Local JSON fallback |
+| `SWU_MCP_CACHE_DIR` | `.swu-mcp-cache` | Per-card response cache |
+| `SWU_MCP_DEFAULT_LIMIT` | `10` | Default search result limit |
 
-- Search filters compile into the native SWU DB syntax, so natural text and advanced filter clauses can be mixed.
-- Random card selection uses the search endpoint and samples locally from the result set.
-- The server auto-builds a local card catalog under `data/catalog/cards.json` if `swu-db` search gets flaky, which makes deck uploads and brewing far more reliable than a pure live-API wrapper.
-- Deck sessions now track hand, library, discard, resources, ground arena, space arena, leader deployment, base state, ready/exhausted flags, and simple counters like damage, experience, and shields.
-- `swu_analyze_deck`, `swu_suggest_cards`, and `swu_generate_deck` accept `target_matchups` and `meta_context` so you can tune for specific environments instead of generic ladder play.
-- The game engine now supports two-player setup, legal-action generation, resource turns, unit/event play, leader deployment, combat, base damage, a stack/priority loop, and a basic AI pilot loop.
-- `swu_take_game_action` now accepts `resolve_effect` and `pass_priority`, and stack-bearing turns expose targetable options plus priority passes through `swu_get_legal_actions`.
-- The current stack engine handles common card text patterns such as direct damage to units or bases, drawing cards, shields, experience, exhausting units, readying the source or attached unit, upgrade attachment, and `Restore` healing on attack.
-- Attachable upgrades now track their host, carry simple static buffs like `+X/+Y`, can grant key keywords such as `Sentinel`, and are discarded automatically when the attached card leaves play.
-- `Ambush`, `Sentinel`, `Saboteur`, `Overwhelm`, shields, experience, leader defeat/revert, and basic `When Played` / `On Attack` text patterns are supported in the current simulator.
-- Attack triggers now pause for stack interaction before combat damage is assigned, so Claude can choose targets, pass priority, and then continue into combat instead of skipping that window.
-- Current gameplay is still a pragmatic rules engine, not a full comprehensive-rules simulator yet. It is strongest for iterative playtesting and AI sparring, and weaker around complex upgrade conditions, nested optional triggers, temporary end-of-phase buffs/debuffs, and deep edge-case timing.
-- Premier validation currently checks `1` leader, `1` base, `50+` main-deck cards, `10` card sideboard max, `3` copy max, and off-aspect penalty reporting.
-- Twin Suns validation uses the current post-March 14, 2025 baseline in this implementation: `2` leaders sharing Heroism or Villainy, `1` base, `80+` singleton main deck, and no sideboard.
+## Format Support
+
+**Premier** — 1 leader, 1 base, 50+ main deck (3x copy limit), 10-card sideboard, off-aspect penalty reporting.
+
+**Twin Suns** — 2 leaders sharing Heroism or Villainy, 1 base, 80+ singleton main deck, no sideboard.
+
+## Game Engine
+
+The simulator supports two-player games with:
+- Resource turns, unit/event play, leader deployment, combat, base damage
+- Stack/priority loop with targeting and responses
+- Ambush, Sentinel, Saboteur, Overwhelm, Shielded, Restore, Raid, Hidden
+- When Played / On Attack / When Defeated trigger patterns
+- Upgrade attachment with static buffs and keyword grants
+- Basic AI pilot for sparring
+
+This is a pragmatic rules engine for playtesting and AI sparring, not a comprehensive rules simulator. Edge cases around complex upgrade conditions, nested optional triggers, and deep timing interactions are not fully covered.
 
 ## Example Prompts
 
-- "Upload this Luke ECL list, draw an opening hand, play my 2-drop to ground, and mark it exhausted."
-- "Analyze this deck into aggro and control with `target_matchups` of `['aggro', 'control']`."
-- "Suggest four swaps for space-heavy metas with `meta_context` pressure of `{'space': 0.6, 'aggro': 0.4}`."
-- "Generate a budget Heroism Rebel deck tuned for aggro and space matchups."
-- "Start a game with my deck against a generated villainy aggro deck, then show my legal actions."
-- "Take my action to play Alliance Dispatcher, then let Claude take its turn."
-- "Play Open Fire targeting their Battlefield Marine, pass priority, and let Claude respond on the stack."
-- "Attach Protector to my Battlefield Marine, then show whether Claude can still attack my base."
+- "Search for all Cunning leaders from Legends of the Force"
+- "Generate a Twin Suns deck with Cad Bane and Jabba the Hutt"
+- "Upload this decklist, analyze it, and suggest swaps for an aggro-heavy meta"
+- "Start a game with my Qui-Gon deck against a generated Villainy aggro deck"
+- "Take my action to play Boba Fett, then let the AI respond"
+
+## License
+
+[MIT](LICENSE)
