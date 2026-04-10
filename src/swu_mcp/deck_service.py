@@ -1353,7 +1353,7 @@ class DeckService:
         pools: list[dict[str, Any]] = []
         seen: set[str] = set()
         queries = [goal_query] if goal_query and goal_query != "*" else ["unit event"]
-        aspect_queries = [aspect for aspect in sorted(available_aspects) if aspect not in {"Heroism", "Villainy"}]
+        aspect_queries = sorted(available_aspects)
         for aspect in aspect_queries[:2]:
             queries.append(goal_query)
             try:
@@ -1390,17 +1390,25 @@ class DeckService:
         leader_names: list[str] | None,
     ) -> list[dict[str, Any]]:
         if leader_names:
-            leaders = [self.card_service.lookup_card(name=name) for name in leader_names]
+            leaders = []
+            for name in leader_names:
+                leader = self._resolve_leader_by_name(name)
+                if leader:
+                    leaders.append(leader)
         else:
             result = self.card_service.search_cards(query=theme, filters={"type": "Leader"}, limit=10)
-            leaders = [self.card_service.lookup_card(set_code=card["set_code"], card_number=card["number"]) for card in result["cards"][:4]]
-        leaders = [leader for leader in leaders if leader["card_type"] == "Leader"]
+            leaders = []
+            for card in result["cards"][:4]:
+                looked_up = self.card_service.lookup_card(set_code=card["set_code"], card_number=card["number"])
+                if looked_up.get("card_type") == "Leader":
+                    leaders.append(looked_up)
         if not leaders:
             fallback = self.card_service.search_cards(query="*", filters={"type": "Leader"}, limit=4)
             leaders = [
                 self.card_service.lookup_card(set_code=card["set_code"], card_number=card["number"])
                 for card in fallback["cards"]
             ]
+            leaders = [leader for leader in leaders if leader.get("card_type") == "Leader"]
 
         if format_name == PREMIER:
             return leaders[:1]
@@ -1417,11 +1425,29 @@ class DeckService:
                     return [first, second]
         return leaders[:2]
 
+    def _resolve_leader_by_name(self, name: str) -> dict[str, Any] | None:
+        self.card_service._ensure_local_catalog()
+        if self.card_service.catalog.is_available():
+            card = self.card_service.catalog.lookup_by_name(name, preferred_type="Leader")
+            if card:
+                return card.to_dict()
+        try:
+            result = self.card_service.search_cards(name, filters={"type": "Leader"}, limit=5)
+            lowered = name.strip().lower()
+            for candidate in result["cards"]:
+                if lowered in candidate["name"].lower():
+                    return self.card_service.lookup_card(
+                        set_code=candidate["set_code"], card_number=candidate["number"]
+                    )
+        except Exception:
+            pass
+        return None
+
     def _pick_base(self, *, base_name: str | None, aspect_pool: set[str]) -> dict[str, Any]:
         if base_name:
             return self.card_service.lookup_card(name=base_name)
 
-        query = " ".join(sorted(aspect for aspect in aspect_pool if aspect not in {"Heroism", "Villainy"}))
+        query = " ".join(sorted(aspect_pool))
         result = self.card_service.search_cards(query=query or "*", filters={"type": "Base"}, limit=10)
         if not result["cards"]:
             result = self.card_service.search_cards(query="*", filters={"type": "Base"}, limit=10)
