@@ -4,14 +4,15 @@ build-backend = "hatchling.build"
 
 [project]
 name = "r2-d2"
-version = "0.2.0"
+version = "0.3.0"
 description = "Star Wars Unlimited MCP server — card search, deck building, format validation, meta analysis, and two-player game simulation."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
-  "fastmcp==3.2.3",
+  "fastmcp>=3.2.3,<4",
   "httpx>=0.28.1",
+  "pydantic>=2.7",
 ]
 
 [project.optional-dependencies]
