@@ -1,10 +1,21 @@
 from __future__ import annotations
 
+from typing import Annotated, Optional
+
 from fastmcp import FastMCP
+from pydantic import Field
 
 from .card_service import CardService
 from .deck_service import DeckService
 from .game_service import GameService
+from .types import (
+    CardDetail,
+    CardSummary,
+    SearchFilters,
+    SearchOrder,
+    SearchResult,
+    SortDirection,
+)
 
 mcp = FastMCP(
     name="r2-d2",
@@ -19,38 +30,89 @@ deck_service = DeckService(card_service)
 game_service = GameService(deck_service)
 
 
-@mcp.tool(description="Search Star Wars Unlimited cards using natural text and optional structured filters.")
+# ---------------------------------------------------------------------------
+# Card database tools — typed Pydantic surface (v0.3.0)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(description=(
+    "Search Star Wars Unlimited cards using natural text and optional structured filters. "
+    "Pass `query` for free-text matching; use `filters` to constrain by aspect, type, arena, "
+    "rarity, set, trait, or numeric stats (cost/power/hp). Returns a typed SearchResult."
+))
 def swu_search_cards(
-    query: str = "",
-    filters: dict[str, str] | None = None,
-    limit: int = 10,
-    order: str = "name",
-    direction: str = "asc",
-) -> dict:
-    return card_service.search_cards(
+    query: Annotated[str, Field(
+        description="Free-text search; '*' or empty matches all cards (filtered).",
+    )] = "",
+    filters: Annotated[Optional[SearchFilters], Field(
+        default=None,
+        description="Structured filter object — see SearchFilters for valid fields and enums.",
+    )] = None,
+    limit: Annotated[int, Field(
+        ge=1, le=100,
+        description="Max cards to return (1-100).",
+    )] = 10,
+    order: Annotated[SearchOrder, Field(
+        description="Sort field for SWU-DB.",
+    )] = "name",
+    direction: Annotated[SortDirection, Field(
+        description="Sort direction.",
+    )] = "asc",
+) -> SearchResult:
+    raw = card_service.search_cards(
         query=query,
-        filters=filters,
+        filters=filters.to_legacy_dict() if filters else None,
         limit=limit,
         order=order,
         direction=direction,
     )
+    return SearchResult(
+        query=raw["query"],
+        returned_count=raw["returned_count"],
+        total_matches=raw["total_matches"],
+        source=raw["source"],
+        warning=raw.get("warning"),
+        cards=[CardSummary.model_validate(c) for c in raw["cards"]],
+    )
 
 
-@mcp.tool(description="Look up a specific Star Wars Unlimited card by name or set_code/card_number.")
+@mcp.tool(description=(
+    "Look up a specific Star Wars Unlimited card by name or set_code+card_number. "
+    "Returns the full CardDetail record."
+))
 def swu_lookup_card(
-    name: str | None = None,
-    set_code: str | None = None,
-    card_number: str | None = None,
-) -> dict:
-    return card_service.lookup_card(name=name, set_code=set_code, card_number=card_number)
+    name: Annotated[Optional[str], Field(
+        default=None,
+        description="Exact or prefix card name. Either this OR (set_code AND card_number) is required.",
+    )] = None,
+    set_code: Annotated[Optional[str], Field(
+        default=None,
+        description='Set abbreviation, e.g. "SOR".',
+    )] = None,
+    card_number: Annotated[Optional[str], Field(
+        default=None,
+        description='Card number within the set, e.g. "123".',
+    )] = None,
+) -> CardDetail:
+    raw = card_service.lookup_card(name=name, set_code=set_code, card_number=card_number)
+    return CardDetail.model_validate(raw)
 
 
-@mcp.tool(description="Return a random Star Wars Unlimited card from a search result set.")
+@mcp.tool(description=(
+    "Return a random Star Wars Unlimited card from a search result set."
+))
 def swu_random_card(
-    query: str = "",
-    filters: dict[str, str] | None = None,
-) -> dict:
-    return card_service.random_card(query=query, filters=filters)
+    query: Annotated[str, Field(description="Free-text search to draw a random card from.")] = "",
+    filters: Annotated[Optional[SearchFilters], Field(
+        default=None,
+        description="Optional structured filters.",
+    )] = None,
+) -> CardSummary:
+    raw = card_service.random_card(
+        query=query,
+        filters=filters.to_legacy_dict() if filters else None,
+    )
+    return CardSummary.model_validate(raw["card"])
 
 
 @mcp.tool(description="Return the front or back image URL for a Star Wars Unlimited card.")
@@ -66,6 +128,12 @@ def swu_get_image(
         card_number=card_number,
         back_face=back_face,
     )
+
+
+# ---------------------------------------------------------------------------
+# Deck and game tools — unchanged in v0.3.0; structured-output refactor
+# is staged for a follow-up so this PR stays reviewable.
+# ---------------------------------------------------------------------------
 
 
 @mcp.tool(description="Upload a Star Wars Unlimited decklist into a named stateful session.")

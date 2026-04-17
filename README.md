@@ -9,10 +9,26 @@ Card data comes from the live [SWU DB API](https://www.swu-db.com/api) first and
 ### Card Database
 | Tool | What it does |
 |------|-------------|
-| `swu_search_cards` | Natural text search with structured filters (aspect, trait, type, cost, etc.) |
-| `swu_lookup_card` | Exact lookup by name or set/number |
-| `swu_random_card` | Random card from a filtered pool |
-| `swu_get_image` | Front or back art URL for any card |
+| `swu_search_cards` | Natural text search with **typed** structured filters (aspect/type/arena/rarity/set as enums; cost/power/hp as `{op, value}` comparators). Returns a typed `SearchResult`. |
+| `swu_lookup_card` | Exact lookup by name or set/number. Returns a typed `CardDetail`. |
+| `swu_random_card` | Random card from a filtered pool. Returns a typed `CardSummary`. |
+| `swu_get_image` | Front or back art URL for any card. |
+
+#### Typed search filters (v0.3.0)
+
+`swu_search_cards`, `swu_lookup_card`, and `swu_random_card` now return Pydantic models instead of opaque dicts. FastMCP serializes them as both `content` (human-readable text) and `structuredContent` (typed JSON) — agents can read `.cards[0].cost` directly without parsing string keys.
+
+Filters are typed too. Aspect/type/arena/rarity/set are `Literal[...]` enums, so the agent sees the valid options in the tool schema and typos like `aspect="Cunninng"` are rejected before the API call. Numeric stats use a structured `{op, value}` instead of magic strings:
+
+```python
+swu_search_cards(
+    query="Vader",
+    filters={"aspect": "Villainy", "type": "Leader",
+             "cost": {"op": ">=", "value": 5}},
+)
+```
+
+Deck and game tools still return `dict` — that refactor is staged for a follow-up.
 
 ### Deck Building
 | Tool | What it does |
