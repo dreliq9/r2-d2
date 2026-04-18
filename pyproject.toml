@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "r2-d2"
-version = "0.3.0"
+version = "0.4.0"
 description = "Star Wars Unlimited MCP server — card search, deck building, format validation, meta analysis, and two-player game simulation."
 readme = "README.md"
 license = "MIT"

@@ -914,11 +914,12 @@ wheels = [
 
 [[package]]
 name = "r2-d2"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },
     { name = "httpx" },
+    { name = "pydantic" },
 ]
 
 [package.optional-dependencies]
@@ -928,8 +929,9 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fastmcp", specifier = "==3.2.3" },
+    { name = "fastmcp", specifier = ">=3.2.3,<4" },
     { name = "httpx", specifier = ">=0.28.1" },
+    { name = "pydantic", specifier = ">=2.7" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.5" },
 ]
 provides-extras = ["dev"]
