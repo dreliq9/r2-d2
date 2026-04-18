@@ -9,6 +9,7 @@ from statistics import mean
 from typing import Any
 
 from .card_service import CardService
+from .collection_service import CollectionService
 
 PREMIER = "premier"
 TWIN_SUNS = "twin_suns"
@@ -237,9 +238,40 @@ class DeckSession:
 
 
 class DeckService:
-    def __init__(self, card_service: CardService) -> None:
+    def __init__(
+        self,
+        card_service: CardService,
+        collection_service: CollectionService | None = None,
+    ) -> None:
         self.card_service = card_service
+        self.collection_service = collection_service
         self.sessions: dict[str, DeckSession] = {}
+
+    def _candidate_is_owned(self, candidate: dict[str, Any], *, minimum: int = 1) -> bool:
+        if self.collection_service is None:
+            return True
+        set_code = candidate.get("set_code") or ""
+        number = candidate.get("number") or ""
+        if not set_code or not number:
+            return False
+        return self.collection_service.is_owned(str(set_code), str(number), quantity=minimum)
+
+    def _candidate_owned_count(self, candidate: dict[str, Any]) -> int:
+        if self.collection_service is None:
+            return 0
+        set_code = candidate.get("set_code") or ""
+        number = candidate.get("number") or ""
+        if not set_code or not number:
+            return 0
+        return self.collection_service.owned_count(str(set_code), str(number))
+
+    def _safe_lookup(self, card: dict[str, Any]) -> dict[str, Any] | None:
+        try:
+            return self.card_service.lookup_card(
+                set_code=card.get("set_code"), card_number=card.get("number")
+            )
+        except Exception:
+            return None
 
     def upload_deck(
         self,
@@ -613,6 +645,7 @@ class DeckService:
         limit: int = 8,
         target_matchups: list[str] | None = None,
         meta_context: dict[str, Any] | None = None,
+        only_owned: bool = False,
     ) -> dict[str, Any]:
         parsed = self._resolve_deck_input(session_id=session_id, decklist=decklist, format_name=format_name)
         analysis = self.analyze_deck(
@@ -630,10 +663,13 @@ class DeckService:
         meta_summary = normalize_meta_context(target_matchups=target_matchups, meta_context=meta_context)
 
         scored: list[tuple[float, dict[str, Any], list[str]]] = []
+        collection_active = only_owned and self.collection_service is not None
         for candidate in candidate_pool:
             name = str(candidate["display_name"])
             card_type = str(candidate.get("card_type", ""))
             if card_type in {"Leader", "Base"}:
+                continue
+            if collection_active and not self._candidate_is_owned(candidate):
                 continue
 
             existing_quantity = existing_counts.get(name, 0)
@@ -699,6 +735,8 @@ class DeckService:
             fallback_pool = self._candidate_cards(goal_query="unit event", available_aspects=available_aspects)
             for candidate in fallback_pool:
                 name = str(candidate["display_name"])
+                if collection_active and not self._candidate_is_owned(candidate):
+                    continue
                 existing_quantity = existing_counts.get(name, 0)
                 if parsed.format_name == TWIN_SUNS and existing_quantity >= 1:
                     continue
@@ -740,16 +778,22 @@ class DeckService:
         budget: str | None = None,
         target_matchups: list[str] | None = None,
         meta_context: dict[str, Any] | None = None,
+        only_owned: bool = False,
     ) -> dict[str, Any]:
         self.card_service._ensure_local_catalog()
         normalized_format = normalize_format(format_name)
         meta_summary = normalize_meta_context(target_matchups=target_matchups, meta_context=meta_context)
-        leaders = self._pick_leaders(theme=theme, format_name=normalized_format, leader_names=leader_names)
+        leaders = self._pick_leaders(
+            theme=theme,
+            format_name=normalized_format,
+            leader_names=leader_names,
+            only_owned=only_owned,
+        )
         aspect_pool = set(primary_aspects or [])
         for leader in leaders:
             aspect_pool.update(leader.get("aspects", []))
 
-        base = self._pick_base(base_name=base_name, aspect_pool=aspect_pool)
+        base = self._pick_base(base_name=base_name, aspect_pool=aspect_pool, only_owned=only_owned)
         aspect_pool.update(base.get("aspects", []))
 
         target_main_size = PREMIER_MAIN_DECK_MIN if normalized_format == PREMIER else TWIN_SUNS_MAIN_DECK_MIN
@@ -770,14 +814,20 @@ class DeckService:
             reverse=True,
         )
 
+        collection_active = only_owned and self.collection_service is not None
+
         for candidate in sorted_candidates:
             if str(candidate.get("card_type")) in {"Leader", "Base"}:
                 continue
             display_name = str(candidate["display_name"])
             if name_counts[display_name] >= copy_limit:
                 continue
+            if collection_active and not self._candidate_is_owned(candidate):
+                continue
             quantity = 1 if normalized_format == TWIN_SUNS else recommended_quantity(candidate)
             quantity = min(quantity, copy_limit - name_counts[display_name])
+            if collection_active:
+                quantity = min(quantity, self._candidate_owned_count(candidate))
             if quantity <= 0:
                 continue
             main_cards.append(
@@ -802,8 +852,12 @@ class DeckService:
                 display_name = str(candidate["display_name"])
                 if name_counts[display_name] >= copy_limit:
                     continue
+                if collection_active and not self._candidate_is_owned(candidate):
+                    continue
                 quantity = 1 if normalized_format == TWIN_SUNS else 3
                 quantity = min(quantity, copy_limit - name_counts[display_name])
+                if collection_active:
+                    quantity = min(quantity, self._candidate_owned_count(candidate))
                 if quantity <= 0:
                     continue
                 main_cards.append(
@@ -1388,6 +1442,7 @@ class DeckService:
         theme: str,
         format_name: str,
         leader_names: list[str] | None,
+        only_owned: bool = False,
     ) -> list[dict[str, Any]]:
         if leader_names:
             leaders = []
@@ -1396,19 +1451,24 @@ class DeckService:
                 if leader:
                     leaders.append(leader)
         else:
-            result = self.card_service.search_cards(query=theme, filters={"type": "Leader"}, limit=10)
+            result = self.card_service.search_cards(query=theme, filters={"type": "Leader"}, limit=25)
             leaders = []
-            for card in result["cards"][:4]:
-                looked_up = self.card_service.lookup_card(set_code=card["set_code"], card_number=card["number"])
-                if looked_up.get("card_type") == "Leader":
+            for card in result["cards"][:15]:
+                looked_up = self._safe_lookup(card)
+                if looked_up is not None and looked_up.get("card_type") == "Leader":
                     leaders.append(looked_up)
         if not leaders:
-            fallback = self.card_service.search_cards(query="*", filters={"type": "Leader"}, limit=4)
-            leaders = [
-                self.card_service.lookup_card(set_code=card["set_code"], card_number=card["number"])
-                for card in fallback["cards"]
-            ]
-            leaders = [leader for leader in leaders if leader.get("card_type") == "Leader"]
+            fallback = self.card_service.search_cards(query="*", filters={"type": "Leader"}, limit=25)
+            leaders = []
+            for card in fallback["cards"]:
+                looked_up = self._safe_lookup(card)
+                if looked_up is not None and looked_up.get("card_type") == "Leader":
+                    leaders.append(looked_up)
+
+        if only_owned and self.collection_service is not None:
+            owned_leaders = [leader for leader in leaders if self._candidate_is_owned(leader)]
+            if owned_leaders:
+                leaders = owned_leaders
 
         if format_name == PREMIER:
             return leaders[:1]
@@ -1443,15 +1503,36 @@ class DeckService:
             pass
         return None
 
-    def _pick_base(self, *, base_name: str | None, aspect_pool: set[str]) -> dict[str, Any]:
+    def _pick_base(
+        self,
+        *,
+        base_name: str | None,
+        aspect_pool: set[str],
+        only_owned: bool = False,
+    ) -> dict[str, Any]:
         if base_name:
             return self.card_service.lookup_card(name=base_name)
 
         query = " ".join(sorted(aspect_pool))
-        result = self.card_service.search_cards(query=query or "*", filters={"type": "Base"}, limit=10)
+        result = self.card_service.search_cards(query=query or "*", filters={"type": "Base"}, limit=25)
         if not result["cards"]:
-            result = self.card_service.search_cards(query="*", filters={"type": "Base"}, limit=10)
-        return self.card_service.lookup_card(set_code=result["cards"][0]["set_code"], card_number=result["cards"][0]["number"])
+            result = self.card_service.search_cards(query="*", filters={"type": "Base"}, limit=25)
+
+        if only_owned and self.collection_service is not None:
+            for candidate in result["cards"]:
+                if self.collection_service.is_owned(str(candidate["set_code"]), str(candidate["number"])):
+                    looked_up = self._safe_lookup(candidate)
+                    if looked_up is not None:
+                        return looked_up
+
+        for candidate in result["cards"]:
+            looked_up = self._safe_lookup(candidate)
+            if looked_up is not None:
+                return looked_up
+
+        return self.card_service.lookup_card(
+            set_code=result["cards"][0]["set_code"], card_number=result["cards"][0]["number"]
+        )
 
     def _parse_deck_dict(self, payload: dict[str, Any], format_name: str) -> ParsedDeck:
         parsed = ParsedDeck(format_name=format_name, title=payload.get("title"))
@@ -1521,6 +1602,15 @@ def parse_deck_line(line: str, *, zone: str) -> DeckCardEntry:
             zone=zone,
             set_code=prefixed_id.group("set"),
             card_number=prefixed_id.group("number"),
+        )
+
+    trailing_set = re.match(r"^(?P<name>.+?)\s+\((?P<set>[A-Z]{2,4})\)\s*$", remainder)
+    if trailing_set:
+        return DeckCardEntry(
+            quantity=count,
+            name=trailing_set.group("name").strip(),
+            zone=zone,
+            set_code=trailing_set.group("set"),
         )
 
     return DeckCardEntry(quantity=count, name=remainder, zone=zone)

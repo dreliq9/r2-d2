@@ -6,6 +6,8 @@ from fastmcp import FastMCP
 from pydantic import Field
 
 from .card_service import CardService
+from .collection_service import CollectionService
+from .config import settings
 from .deck_service import DeckService
 from .game_service import GameService
 from .types import (
@@ -22,11 +24,14 @@ mcp = FastMCP(
     instructions=(
         "Star Wars Unlimited MCP server. Use these tools to search cards, look up exact printings, "
         "fetch images, upload and playtest decks, validate formats, analyze lists, suggest cards, "
-        "generate first-pass brews, and simulate two-player games with AI opponents."
+        "generate first-pass brews, and simulate two-player games with AI opponents. "
+        "Also supports a persistent personal collection loaded from a SWUDB CSV export — "
+        "pair with only_owned=True on deck generation and suggestions for collection-aware brewing."
     ),
 )
 card_service = CardService()
-deck_service = DeckService(card_service)
+collection_service = CollectionService(settings.collection_path)
+deck_service = DeckService(card_service, collection_service=collection_service)
 game_service = GameService(deck_service)
 
 
@@ -291,7 +296,7 @@ def swu_analyze_deck(
     )
 
 
-@mcp.tool(description="Suggest cards to improve a Star Wars Unlimited deck toward a stated goal.")
+@mcp.tool(description="Suggest cards to improve a Star Wars Unlimited deck toward a stated goal. Set only_owned=True to restrict suggestions to cards in your loaded collection.")
 def swu_suggest_cards(
     goal: str,
     session_id: str | None = None,
@@ -300,6 +305,7 @@ def swu_suggest_cards(
     limit: int = 8,
     target_matchups: list[str] | None = None,
     meta_context: dict | None = None,
+    only_owned: bool = False,
 ) -> dict:
     return deck_service.suggest_cards(
         goal=goal,
@@ -309,10 +315,11 @@ def swu_suggest_cards(
         limit=limit,
         target_matchups=target_matchups,
         meta_context=meta_context,
+        only_owned=only_owned,
     )
 
 
-@mcp.tool(description="Generate a first-pass Star Wars Unlimited brew around a theme.")
+@mcp.tool(description="Generate a first-pass Star Wars Unlimited brew around a theme. Set only_owned=True to build only with cards in your loaded collection (quantities will be capped by ownership).")
 def swu_generate_deck(
     theme: str,
     format_name: str = "premier",
@@ -322,6 +329,7 @@ def swu_generate_deck(
     budget: str | None = None,
     target_matchups: list[str] | None = None,
     meta_context: dict | None = None,
+    only_owned: bool = False,
 ) -> dict:
     return deck_service.generate_deck(
         theme=theme,
@@ -332,7 +340,39 @@ def swu_generate_deck(
         budget=budget,
         target_matchups=target_matchups,
         meta_context=meta_context,
+        only_owned=only_owned,
     )
+
+
+@mcp.tool(description="Import a Star Wars Unlimited card collection from a SWUDB CSV export (columns: Set, CardNumber, Count, IsFoil). Persists to disk. Set merge=True to add to existing collection instead of replacing it.")
+def swu_load_collection(csv_path: str, merge: bool = False) -> dict:
+    return collection_service.load_csv(csv_path, merge=merge)
+
+
+@mcp.tool(description="Summarize the loaded Star Wars Unlimited collection — total cards, unique printings, per-set breakdown, and storage path.")
+def swu_collection_summary() -> dict:
+    return collection_service.summary()
+
+
+@mcp.tool(description="Return how many copies of a specific Star Wars Unlimited printing the user owns. Use set_code and card_number (e.g. LOF 47).")
+def swu_owned_count(set_code: str, card_number: str) -> dict:
+    count = collection_service.owned_count(set_code=set_code, card_number=card_number)
+    return {
+        "set_code": set_code.upper(),
+        "card_number": str(card_number),
+        "owned": count,
+    }
+
+
+@mcp.tool(description="List owned printings from the loaded collection, optionally filtered by set_code. Pass limit=0 for no limit.")
+def swu_list_collection(set_code: str | None = None, limit: int = 100) -> dict:
+    entries = collection_service.list_entries(set_code=set_code, limit=limit)
+    return {
+        "set_code": set_code.upper() if set_code else None,
+        "limit": limit,
+        "count": len(entries),
+        "entries": entries,
+    }
 
 
 @mcp.tool(description="Export a deck session or decklist as plain text or JSON.")
@@ -363,6 +403,7 @@ def swu_start_game(
     game_id: str | None = None,
     target_matchups: list[str] | None = None,
     meta_context: dict | None = None,
+    player_is_ai: bool = False,
 ) -> dict:
     return game_service.start_game(
         player_decklist=player_decklist,
@@ -376,7 +417,13 @@ def swu_start_game(
         game_id=game_id,
         target_matchups=target_matchups,
         meta_context=meta_context,
+        player_is_ai=player_is_ai,
     )
+
+
+@mcp.tool(description="Run a full AI-vs-AI game simulation to completion. Both players must be AI (set player_is_ai=true in start_game). Returns winner, base damage breakdown, MVP cards, and full game log.")
+def swu_simulate_game(game_id: str, max_turns: int = 50) -> dict:
+    return game_service.simulate_game(game_id=game_id, max_turns=max_turns)
 
 
 @mcp.tool(description="Get the current two-player game state, with hidden information filtered by viewer unless reveal_all is true.")
