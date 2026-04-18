@@ -1,8 +1,16 @@
 from __future__ import annotations
 
 import json
+import unicodedata
 from pathlib import Path
 from typing import Iterable
+
+
+def _strip_accents(text: str) -> str:
+    return "".join(
+        c for c in unicodedata.normalize("NFD", text)
+        if unicodedata.category(c) != "Mn"
+    )
 
 from .models import CardRecord
 
@@ -50,13 +58,14 @@ class LocalCatalog:
         exclude_types: set[str] | None = None,
     ) -> CardRecord | None:
         lowered_name = name.strip().lower()
+        normalized_name = _strip_accents(lowered_name)
         cards = self.all_cards()
         if exclude_types:
             cards = [card for card in cards if card.card_type not in exclude_types]
 
-        exact_display = [card for card in cards if card.display_name.lower() == lowered_name]
-        exact_title = [card for card in cards if card.name.lower() == lowered_name]
-        prefix_matches = [card for card in cards if card.display_name.lower().startswith(lowered_name)]
+        exact_display = [card for card in cards if card.display_name.lower() == lowered_name or _strip_accents(card.display_name.lower()) == normalized_name]
+        exact_title = [card for card in cards if card.name.lower() == lowered_name or _strip_accents(card.name.lower()) == normalized_name]
+        prefix_matches = [card for card in cards if card.display_name.lower().startswith(lowered_name) or _strip_accents(card.display_name.lower()).startswith(normalized_name)]
 
         for candidates in (exact_display, exact_title, prefix_matches):
             if preferred_type:
@@ -65,6 +74,16 @@ class LocalCatalog:
                     return typed_match
             if candidates:
                 return candidates[0]
+
+        # Fuzzy fallback: tokenized search for near-misses (typos, accent diffs)
+        filters: dict[str, str] = {}
+        if preferred_type:
+            filters["type"] = preferred_type
+        fuzzy_results = self.search(name, filters=filters, limit=5)
+        if exclude_types:
+            fuzzy_results = [c for c in fuzzy_results if c.card_type not in exclude_types]
+        if fuzzy_results:
+            return fuzzy_results[0]
         return None
 
     def search(self, query: str, filters: dict[str, str] | None = None, limit: int = 10) -> list[CardRecord]:
@@ -95,6 +114,31 @@ def tokenize(query: str) -> list[str]:
     return [term.lower() for term in query.split() if term.strip()]
 
 
+def _fuzzy_token_match(term: str, haystack: str) -> bool:
+    if term in haystack:
+        return True
+    # For long tokens, check if any word in the haystack is within edit distance 2
+    if len(term) >= 5:
+        for word in haystack.split():
+            if abs(len(word) - len(term)) <= 2 and _edit_distance_lte(term, word, 2):
+                return True
+    return False
+
+
+def _edit_distance_lte(a: str, b: str, threshold: int) -> bool:
+    if abs(len(a) - len(b)) > threshold:
+        return False
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a):
+        curr = [i + 1] + [0] * len(b)
+        for j, cb in enumerate(b):
+            curr[j + 1] = prev[j] if ca == cb else 1 + min(prev[j], prev[j + 1], curr[j])
+        if min(curr) > threshold:
+            return False
+        prev = curr
+    return prev[len(b)] <= threshold
+
+
 def matches_query(card: CardRecord, query_terms: Iterable[str]) -> bool:
     haystack = " ".join(
         [
@@ -110,7 +154,7 @@ def matches_query(card: CardRecord, query_terms: Iterable[str]) -> bool:
             card.epic_action or "",
         ]
     ).lower()
-    return all(term in haystack for term in query_terms)
+    return all(_fuzzy_token_match(term, haystack) for term in query_terms)
 
 
 def matches_filters(card: CardRecord, filters: dict[str, str]) -> bool:

@@ -101,6 +101,7 @@ class GameService:
         game_id: str | None = None,
         target_matchups: list[str] | None = None,
         meta_context: dict[str, Any] | None = None,
+        player_is_ai: bool = False,
     ) -> dict[str, Any]:
         normalized_format = normalize_format(format_name)
         resolved_game_id = game_id or f"game-{uuid4().hex[:8]}"
@@ -145,7 +146,7 @@ class GameService:
                     player_id="player",
                     display_name=player_name,
                     deck_session_id=player_session_id,
-                    is_ai=False,
+                    is_ai=player_is_ai,
                 ),
                 "opponent": PlayerGameState(
                     player_id="opponent",
@@ -530,6 +531,182 @@ class GameService:
             "player_id": player_id,
             "executed": executed,
             "state": self.get_game_state(game_id=game_id, viewer="player", reveal_all=False),
+        }
+
+    def simulate_game(
+        self,
+        *,
+        game_id: str,
+        max_turns: int = 50,
+    ) -> dict[str, Any]:
+        game = self._get_game(game_id)
+        if game.winner:
+            return {"error": "Game already has a winner.", "winner": game.winner}
+
+        # Ensure both players are AI
+        for pid, pstate in game.players.items():
+            if not pstate.is_ai:
+                raise ValueError(
+                    f"{pid} ({pstate.display_name}) is not AI-controlled. "
+                    "Set player_is_ai=true when starting the game to simulate."
+                )
+
+        # Track per-card damage dealt to bases
+        base_damage_by_card: dict[str, dict[str, int]] = {
+            "player": {},
+            "opponent": {},
+        }
+        cards_played: dict[str, list[str]] = {"player": [], "opponent": []}
+        cards_defeated: dict[str, list[str]] = {"player": [], "opponent": []}
+        turn_log: list[dict[str, Any]] = []
+        safety_counter = 0
+        max_actions_total = max_turns * 30  # hard ceiling
+
+        while not game.winner and game.turn_number <= max_turns * 2:
+            safety_counter += 1
+            if safety_counter > max_actions_total:
+                break
+
+            active = game.active_player_id
+            if game.pending_effects:
+                active = game.priority_player_id
+
+            log_before = len(game.log)
+
+            # Run one AI turn / priority pass
+            try:
+                self.take_ai_turn(
+                    game_id=game_id,
+                    player_id=active,
+                    max_actions=12,
+                )
+            except Exception:
+                # If AI gets stuck, try passing or ending turn
+                try:
+                    self.take_action(
+                        game_id=game_id,
+                        player_id=active,
+                        action="pass_priority" if game.pending_effects else "end_turn",
+                    )
+                except Exception:
+                    break
+
+            # Scan new log entries for stats
+            new_entries = game.log[log_before:]
+            for entry in new_entries:
+                # Track base damage: "X dealt N damage to Y's base with Z"
+                dmg_match = re.search(
+                    r"dealt (\d+) damage to .+'s base with (.+)\.", entry
+                )
+                if dmg_match:
+                    amount = int(dmg_match.group(1))
+                    card = dmg_match.group(2)
+                    attacker = "player" if entry.startswith(
+                        game.players["player"].display_name
+                    ) else "opponent"
+                    base_damage_by_card[attacker][card] = (
+                        base_damage_by_card[attacker].get(card, 0) + amount
+                    )
+
+                # Track cards played
+                play_match = re.search(r"played (.+?) for \d+ resources", entry)
+                if play_match:
+                    card = play_match.group(1)
+                    who = "player" if entry.startswith(
+                        game.players["player"].display_name
+                    ) else "opponent"
+                    cards_played[who].append(card)
+
+                # Track defeats
+                if "was defeated" in entry or "defeated " in entry.lower():
+                    defeat_match = re.search(r"defeated (.+?)[\.\!]", entry, re.IGNORECASE)
+                    if defeat_match:
+                        card = defeat_match.group(1)
+                        # Card belongs to the player who LOST it
+                        who = "opponent" if entry.startswith(
+                            game.players["player"].display_name
+                        ) else "player"
+                        cards_defeated[who].append(card)
+
+            # Log turn summary
+            if new_entries:
+                turn_log.append({
+                    "turn": game.turn_number,
+                    "active": active,
+                    "actions": new_entries,
+                })
+
+        # Build final state
+        player_session = self._deck_session_for(game, "player")
+        opponent_session = self._deck_session_for(game, "opponent")
+        p_base_state = player_session.bases[0] if player_session.bases else None
+        o_base_state = opponent_session.bases[0] if opponent_session.bases else None
+
+        p_base_hp = int(player_session.card_index[p_base_state.lookup_id]["hp"]) if p_base_state else 0
+        o_base_hp = int(opponent_session.card_index[o_base_state.lookup_id]["hp"]) if o_base_state else 0
+        p_base_dmg = p_base_state.damage if p_base_state else 0
+        o_base_dmg = o_base_state.damage if o_base_state else 0
+
+        # MVP: card that dealt most base damage per side
+        def mvp(damage_dict: dict[str, int]) -> dict[str, Any] | None:
+            if not damage_dict:
+                return None
+            top = max(damage_dict, key=damage_dict.get)  # type: ignore[arg-type]
+            return {"card": top, "base_damage": damage_dict[top]}
+
+        p_name = game.players["player"].display_name
+        o_name = game.players["opponent"].display_name
+
+        return {
+            "game_id": game_id,
+            "winner": game.winner or "draw (turn limit)",
+            "winner_name": (
+                game.players[game.winner].display_name if game.winner else None
+            ),
+            "total_turns": game.turn_number,
+            "final_bases": {
+                p_name: {
+                    "base": p_base_state.name if p_base_state else "?",
+                    "hp_remaining": max(0, p_base_hp - p_base_dmg),
+                    "hp_total": p_base_hp,
+                    "damage_taken": p_base_dmg,
+                },
+                o_name: {
+                    "base": o_base_state.name if o_base_state else "?",
+                    "hp_remaining": max(0, o_base_hp - o_base_dmg),
+                    "hp_total": o_base_hp,
+                    "damage_taken": o_base_dmg,
+                },
+            },
+            "base_damage_by_card": {
+                p_name: dict(
+                    sorted(
+                        base_damage_by_card["player"].items(),
+                        key=lambda x: x[1],
+                        reverse=True,
+                    )
+                ),
+                o_name: dict(
+                    sorted(
+                        base_damage_by_card["opponent"].items(),
+                        key=lambda x: x[1],
+                        reverse=True,
+                    )
+                ),
+            },
+            "mvp": {
+                p_name: mvp(base_damage_by_card["player"]),
+                o_name: mvp(base_damage_by_card["opponent"]),
+            },
+            "cards_played": {
+                p_name: len(cards_played["player"]),
+                o_name: len(cards_played["opponent"]),
+            },
+            "cards_defeated": {
+                p_name: len(cards_defeated["player"]),
+                o_name: len(cards_defeated["opponent"]),
+            },
+            "game_log": game.log,
         }
 
     def _take_resource(self, game: GameSession, player_id: str, card_name: str) -> dict[str, Any]:
