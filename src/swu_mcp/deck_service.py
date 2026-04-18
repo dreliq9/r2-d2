@@ -659,7 +659,7 @@ class DeckService:
         existing_counts = entry_quantity_by_name(parsed.main_deck + parsed.sideboard)
         early_curve_gap = max(0, 12 - quantity_for_cost(parsed.main_deck, 0, 2))
         goal_query = compile_goal_query(goal)
-        candidate_pool = self._candidate_cards(goal_query=goal_query, available_aspects=available_aspects)
+        candidate_pool = self._candidate_cards(goal_query=goal_query, available_aspects=available_aspects, only_owned=only_owned)
         meta_summary = normalize_meta_context(target_matchups=target_matchups, meta_context=meta_context)
 
         scored: list[tuple[float, dict[str, Any], list[str]]] = []
@@ -732,7 +732,7 @@ class DeckService:
 
         top_hits = sorted(scored, key=lambda item: item[0], reverse=True)[: max(1, min(limit, 12))]
         if not top_hits:
-            fallback_pool = self._candidate_cards(goal_query="unit event", available_aspects=available_aspects)
+            fallback_pool = self._candidate_cards(goal_query="unit event", available_aspects=available_aspects, only_owned=only_owned)
             for candidate in fallback_pool:
                 name = str(candidate["display_name"])
                 if collection_active and not self._candidate_is_owned(candidate):
@@ -797,37 +797,78 @@ class DeckService:
         aspect_pool.update(base.get("aspects", []))
 
         target_main_size = PREMIER_MAIN_DECK_MIN if normalized_format == PREMIER else TWIN_SUNS_MAIN_DECK_MIN
-        candidate_pool = self._candidate_cards(goal_query=compile_goal_query(theme), available_aspects=aspect_pool)
+        candidate_pool = self._candidate_cards(goal_query=compile_goal_query(theme), available_aspects=aspect_pool, only_owned=only_owned)
+        filler_pool = self._candidate_cards(goal_query="unit event", available_aspects=aspect_pool, only_owned=only_owned)
+        merged_by_id: dict[str, dict[str, Any]] = {}
+        for candidate in list(candidate_pool) + list(filler_pool):
+            key = str(candidate.get("lookup_id") or f"{candidate.get('set_code')}-{candidate.get('number')}")
+            merged_by_id.setdefault(key, candidate)
+        pool = list(merged_by_id.values())
+
         main_cards: list[DeckCardEntry] = []
         name_counts: Counter[str] = Counter()
         copy_limit = 1 if normalized_format == TWIN_SUNS else PREMIER_COPY_LIMIT
+        collection_active = only_owned and self.collection_service is not None
 
-        sorted_candidates = sorted(
-            candidate_pool,
-            key=lambda card: generation_score(
-                card=card,
+        TYPE_TARGET_FRACTIONS = {"Unit": 0.70, "Event": 0.22, "Upgrade": 0.08}
+        type_targets = {
+            ctype: max(1, int(round(target_main_size * frac)))
+            for ctype, frac in TYPE_TARGET_FRACTIONS.items()
+        }
+        type_counts: Counter[str] = Counter()
+
+        base_scores: dict[int, float] = {}
+        for candidate in pool:
+            base_scores[id(candidate)] = generation_score(
+                card=candidate,
                 theme=theme,
                 aspect_pool=aspect_pool,
                 budget=budget,
                 meta_summary=meta_summary,
-            ),
-            reverse=True,
-        )
+            )
 
-        collection_active = only_owned and self.collection_service is not None
+        def ratio_bias(card_type: str) -> float:
+            target = type_targets.get(card_type, 0)
+            if target <= 0:
+                return 0.0
+            ratio = type_counts[card_type] / target
+            if ratio >= 1.2:
+                return -(ratio - 1.2) * 200.0 - (1.2 - 1.0) * 50.0
+            if ratio >= 1.0:
+                return -(ratio - 1.0) * 50.0
+            return 0.0
 
-        for candidate in sorted_candidates:
+        def eligible(candidate: dict[str, Any]) -> bool:
             if str(candidate.get("card_type")) in {"Leader", "Base"}:
-                continue
-            display_name = str(candidate["display_name"])
-            if name_counts[display_name] >= copy_limit:
-                continue
+                return False
+            if name_counts[str(candidate["display_name"])] >= copy_limit:
+                return False
             if collection_active and not self._candidate_is_owned(candidate):
-                continue
-            quantity = 1 if normalized_format == TWIN_SUNS else recommended_quantity(candidate)
+                return False
+            return True
+
+        remaining = [c for c in pool if eligible(c)]
+        while sum(entry.quantity for entry in main_cards) < target_main_size and remaining:
+            best = None
+            best_score = float("-inf")
+            best_idx = -1
+            for idx, candidate in enumerate(remaining):
+                score = base_scores.get(id(candidate), 0.0) + ratio_bias(str(candidate.get("card_type", "Unit")))
+                if score > best_score:
+                    best_score = score
+                    best = candidate
+                    best_idx = idx
+            if best is None:
+                break
+            remaining.pop(best_idx)
+
+            display_name = str(best["display_name"])
+            quantity = 1 if normalized_format == TWIN_SUNS else recommended_quantity(best)
             quantity = min(quantity, copy_limit - name_counts[display_name])
             if collection_active:
-                quantity = min(quantity, self._candidate_owned_count(candidate))
+                quantity = min(quantity, self._candidate_owned_count(best))
+            remaining_slots = target_main_size - sum(entry.quantity for entry in main_cards)
+            quantity = min(quantity, remaining_slots)
             if quantity <= 0:
                 continue
             main_cards.append(
@@ -835,44 +876,13 @@ class DeckService:
                     quantity=quantity,
                     name=display_name,
                     zone="main_deck",
-                    set_code=str(candidate["set_code"]),
-                    card_number=str(candidate["number"]),
-                    card=candidate,
+                    set_code=str(best["set_code"]),
+                    card_number=str(best["number"]),
+                    card=best,
                 )
             )
             name_counts[display_name] += quantity
-            if sum(entry.quantity for entry in main_cards) >= target_main_size:
-                break
-
-        if sum(entry.quantity for entry in main_cards) < target_main_size:
-            filler_candidates = self._candidate_cards(goal_query="unit event", available_aspects=aspect_pool)
-            for candidate in filler_candidates:
-                if str(candidate.get("card_type")) in {"Leader", "Base"}:
-                    continue
-                display_name = str(candidate["display_name"])
-                if name_counts[display_name] >= copy_limit:
-                    continue
-                if collection_active and not self._candidate_is_owned(candidate):
-                    continue
-                quantity = 1 if normalized_format == TWIN_SUNS else 3
-                quantity = min(quantity, copy_limit - name_counts[display_name])
-                if collection_active:
-                    quantity = min(quantity, self._candidate_owned_count(candidate))
-                if quantity <= 0:
-                    continue
-                main_cards.append(
-                    DeckCardEntry(
-                        quantity=quantity,
-                        name=display_name,
-                        zone="main_deck",
-                        set_code=str(candidate["set_code"]),
-                        card_number=str(candidate["number"]),
-                        card=candidate,
-                    )
-                )
-                name_counts[display_name] += quantity
-                if sum(entry.quantity for entry in main_cards) >= target_main_size:
-                    break
+            type_counts[str(best.get("card_type", "Unit"))] += quantity
 
         parsed = ParsedDeck(
             format_name=normalized_format,
@@ -1377,13 +1387,22 @@ class DeckService:
         else:
             destination_entries[destination_index].quantity += count
 
-    def _candidate_cards(self, *, goal_query: str, available_aspects: set[str]) -> list[dict[str, Any]]:
+    def _candidate_cards(
+        self,
+        *,
+        goal_query: str,
+        available_aspects: set[str],
+        only_owned: bool = False,
+    ) -> list[dict[str, Any]]:
+        restrict_to_owned = only_owned and self.collection_service is not None
         if self.card_service.catalog.is_available():
             local_cards = [card.to_summary() for card in self.card_service.catalog.all_cards()]
             goal_tokens = tokenize_text(goal_query)
             ranked: list[tuple[tuple[int, int, int], dict[str, Any]]] = []
             for card in local_cards:
                 if card["card_type"] in {"Leader", "Base"}:
+                    continue
+                if restrict_to_owned and not self._candidate_is_owned(card):
                     continue
                 searchable = " ".join(
                     [
@@ -1396,7 +1415,7 @@ class DeckService:
                 token_hits = sum(1 for token in goal_tokens if token in searchable)
                 on_aspect = int(not (set(card.get("aspects", [])) - available_aspects))
                 type_bonus = 1 if card["card_type"] == "Unit" else 0
-                if goal_tokens and token_hits == 0 and on_aspect == 0:
+                if goal_tokens and token_hits == 0 and on_aspect == 0 and not restrict_to_owned:
                     continue
                 ranked.append(((on_aspect, token_hits, type_bonus), card))
 
