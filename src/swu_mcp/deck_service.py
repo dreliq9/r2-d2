@@ -10,6 +10,23 @@ from typing import Any
 
 from .card_service import CardService
 from .collection_service import CollectionService
+from .interaction_glossary import (
+    _filter_aspect_needs,
+    needs_set as interaction_needs_set,
+    provides_set as interaction_provides_set,
+)
+
+INTERACTION_WEIGHT = 0.15
+INTERACTION_PAYOFF_W = 8.0
+INTERACTION_ENABLER_W = 8.0
+INTERACTION_TRAIT_W = 0.5
+INTERACTION_CAP_PER_PAIR = 1
+
+POWER_WEIGHT = 1.0
+BLANK_TEXT_PENALTY = -4.0
+RARITY_BUMP = {"Common": 0.0, "Uncommon": 1.0, "Rare": 3.0, "Legendary": 5.0, "Special": 2.0}
+TARGET_AVG_COST = 3.4
+COST_OVERRUN_W = -3.0
 
 PREMIER = "premier"
 TWIN_SUNS = "twin_suns"
@@ -615,6 +632,42 @@ class DeckService:
             meta_summary=meta_summary,
         )
 
+        # Real interaction density — uses the same scoring model the picker
+        # optimizes for. avg_per_card is comparable across decks; tribal
+        # builds (e.g. Vehicle/Pilot) score 50+, goodstuff piles 10–30.
+        # See `interaction_glossary.py` for the provides/needs model.
+        all_resolved = [entry.card for entry in parsed.leaders + parsed.bases + parsed.main_deck if entry.card]
+        aspect_pool_now = {f"aspect:{a}" for c in all_resolved for a in (c.get("aspects") or [])}
+        interaction_per_card: list[float] = []
+        for entry in parsed.main_deck:
+            c = entry.card
+            if not c:
+                continue
+            cand_p = interaction_provides_set(c)
+            cand_n = _filter_aspect_needs(interaction_needs_set(c, score_aspects=True), aspect_pool_now)
+            cand_t = {t for t in cand_p if t.startswith("trait:")}
+            score = 0.0
+            for other in all_resolved:
+                if other is c:
+                    continue
+                op = interaction_provides_set(other)
+                on = _filter_aspect_needs(interaction_needs_set(other, score_aspects=True), aspect_pool_now)
+                ot = {t for t in op if t.startswith("trait:")}
+                score += INTERACTION_PAYOFF_W * min(len(on & cand_p), INTERACTION_CAP_PER_PAIR)
+                score += INTERACTION_ENABLER_W * min(len(cand_n & op), INTERACTION_CAP_PER_PAIR)
+                score += INTERACTION_TRAIT_W * min(len(cand_t & ot), INTERACTION_CAP_PER_PAIR)
+            interaction_per_card.append(score)
+        interaction_density = (
+            round(sum(interaction_per_card) / len(interaction_per_card), 1)
+            if interaction_per_card
+            else 0.0
+        )
+        # Per-pair normalized — division by (deck_size - 1) makes the metric
+        # comparable across formats. Premier and Twin Suns both end up in
+        # the ~0.5 (goodstuff) to ~4.5 (tribal) range.
+        deck_pair_count = max(len(all_resolved) - 1, 1)
+        interaction_per_pair = round(interaction_density / deck_pair_count, 2)
+
         return {
             "format": parsed.format_name,
             "leaders": leaders,
@@ -630,6 +683,8 @@ class DeckService:
             "role_breakdown": dict(role_counts.most_common()),
             "available_aspects": sorted(available_aspects),
             "synergy_score": max(0, min(100, synergy_score)),
+            "interaction_density": interaction_density,
+            "interaction_per_pair": interaction_per_pair,
             "style_notes": style_notes,
             "meta_summary": meta_summary,
             "matchup_scores": matchup_scores,
@@ -806,11 +861,33 @@ class DeckService:
         pool = list(merged_by_id.values())
 
         main_cards: list[DeckCardEntry] = []
-        name_counts: Counter[str] = Counter()
+        # Track copies per canonical lookup_id (SET/NNN) — not per display_name —
+        # so near-duplicate printings ("Prepare For Takeoff" / "Prepare for Takeoff")
+        # don't slip through as distinct cards.
+        id_counts: Counter[str] = Counter()
         copy_limit = 1 if normalized_format == TWIN_SUNS else PREMIER_COPY_LIMIT
         collection_active = only_owned and self.collection_service is not None
 
-        TYPE_TARGET_FRACTIONS = {"Unit": 0.70, "Event": 0.22, "Upgrade": 0.08}
+        def card_key(card: dict[str, Any]) -> str:
+            # Canonical card identity. The same card can have many printings
+            # (Normal / Hyperspace / Foil / Hyperspace Foil) with distinct
+            # lookup_ids — dedup on (Name, Subtitle) so all printings collapse
+            # to one card. Lowercased to also catch case-mismatched catalog
+            # rows ("Prepare For Takeoff" vs "Prepare for Takeoff").
+            name = (card.get("name") or card.get("display_name") or "").strip().lower()
+            # display_name sometimes already includes " - Subtitle"; strip it
+            # then add subtitle separately so the key is normalized.
+            if " - " in name:
+                name = name.split(" - ", 1)[0].strip()
+            subtitle = (card.get("subtitle") or "").strip().lower()
+            if name:
+                return f"name:{name}|{subtitle}"
+            lid = card.get("lookup_id")
+            if lid:
+                return str(lid)
+            return f"{card.get('set_code')}/{card.get('number')}"
+
+        TYPE_TARGET_FRACTIONS = {"Unit": 0.78, "Event": 0.17, "Upgrade": 0.05}
         type_targets = {
             ctype: max(1, int(round(target_main_size * frac)))
             for ctype, frac in TYPE_TARGET_FRACTIONS.items()
@@ -827,62 +904,184 @@ class DeckService:
                 meta_summary=meta_summary,
             )
 
-        def ratio_bias(card_type: str) -> float:
-            target = type_targets.get(card_type, 0)
-            if target <= 0:
-                return 0.0
-            ratio = type_counts[card_type] / target
-            if ratio >= 1.2:
-                return -(ratio - 1.2) * 200.0 - (1.2 - 1.0) * 50.0
-            if ratio >= 1.0:
-                return -(ratio - 1.0) * 50.0
-            return 0.0
+        # Cache provides/needs/traits sets for every card we may score against.
+        interaction_cache: dict[int, tuple[set[str], set[str], set[str]]] = {}
+
+        def get_interaction_sets(card: dict[str, Any]) -> tuple[set[str], set[str], set[str]]:
+            key = id(card)
+            cached = interaction_cache.get(key)
+            if cached is not None:
+                return cached
+            provides = interaction_provides_set(card)
+            needs = interaction_needs_set(card, score_aspects=True)
+            traits = {t for t in provides if t.startswith("trait:")}
+            interaction_cache[key] = (provides, needs, traits)
+            return interaction_cache[key]
+
+        # Anchors (leaders + base) seed the deck-context for the very first pick.
+        deck_so_far: list[dict[str, Any]] = list(leaders) + [base]
+        for anchor in deck_so_far:
+            get_interaction_sets(anchor)
+
+        def deck_aspect_pool() -> set[str]:
+            return {
+                f"aspect:{a}"
+                for d in deck_so_far
+                for a in (d.get("aspects") or [])
+            }
+
+        def interaction_term(candidate: dict[str, Any], aspect_pool_now: set[str]) -> float:
+            cand_provides, cand_needs, cand_traits = get_interaction_sets(candidate)
+            cand_needs_filtered = _filter_aspect_needs(cand_needs, aspect_pool_now)
+            total = 0.0
+            for d in deck_so_far:
+                d_provides, d_needs, d_traits = get_interaction_sets(d)
+                d_needs_filtered = _filter_aspect_needs(d_needs, aspect_pool_now)
+                total += INTERACTION_PAYOFF_W * min(
+                    len(d_needs_filtered & cand_provides), INTERACTION_CAP_PER_PAIR
+                )
+                total += INTERACTION_ENABLER_W * min(
+                    len(cand_needs_filtered & d_provides), INTERACTION_CAP_PER_PAIR
+                )
+                total += INTERACTION_TRAIT_W * min(
+                    len(cand_traits & d_traits), INTERACTION_CAP_PER_PAIR
+                )
+            return total
 
         def eligible(candidate: dict[str, Any]) -> bool:
             if str(candidate.get("card_type")) in {"Leader", "Base"}:
                 return False
-            if name_counts[str(candidate["display_name"])] >= copy_limit:
+            if id_counts[card_key(candidate)] >= copy_limit:
                 return False
             if collection_active and not self._candidate_is_owned(candidate):
                 return False
             return True
 
-        remaining = [c for c in pool if eligible(c)]
-        while sum(entry.quantity for entry in main_cards) < target_main_size and remaining:
-            best = None
-            best_score = float("-inf")
-            best_idx = -1
-            for idx, candidate in enumerate(remaining):
-                score = base_scores.get(id(candidate), 0.0) + ratio_bias(str(candidate.get("card_type", "Unit")))
-                if score > best_score:
-                    best_score = score
-                    best = candidate
-                    best_idx = idx
-            if best is None:
-                break
-            remaining.pop(best_idx)
+        # Soft curve penalty: once running average cost exceeds target, penalise
+        # any candidate above the running average proportionally to overshoot.
+        def cost_overrun_penalty(candidate: dict[str, Any]) -> float:
+            picked_costs = [parse_int((d.get("cost") or d.get("Cost"))) or 0 for d in deck_so_far if d.get("card_type") == "Unit"]
+            if not picked_costs:
+                return 0.0
+            avg_now = sum(picked_costs) / len(picked_costs)
+            if avg_now <= TARGET_AVG_COST:
+                return 0.0
+            cand_cost = parse_int(candidate.get("cost")) or 0
+            if cand_cost <= avg_now:
+                return 0.0
+            return COST_OVERRUN_W * (cand_cost - avg_now)
 
-            display_name = str(best["display_name"])
-            quantity = 1 if normalized_format == TWIN_SUNS else recommended_quantity(best)
-            quantity = min(quantity, copy_limit - name_counts[display_name])
-            if collection_active:
-                quantity = min(quantity, self._candidate_owned_count(best))
-            remaining_slots = target_main_size - sum(entry.quantity for entry in main_cards)
-            quantity = min(quantity, remaining_slots)
-            if quantity <= 0:
+        # Section-based budget: pick top N per type. Allocate slots so they sum
+        # to target_main_size exactly; spill rounding into Units (largest slot).
+        section_quotas = {
+            ctype: int(round(target_main_size * frac))
+            for ctype, frac in TYPE_TARGET_FRACTIONS.items()
+        }
+        slot_diff = target_main_size - sum(section_quotas.values())
+        section_quotas["Unit"] += slot_diff
+
+        # Run a separate greedy pass per type. deck_so_far accumulates across
+        # sections so cross-type interaction (e.g. an event that pays off
+        # already-picked units) is still scored.
+        section_order = ["Unit", "Event", "Upgrade"]
+        for section_type in section_order:
+            quota = section_quotas[section_type]
+            if quota <= 0:
                 continue
-            main_cards.append(
-                DeckCardEntry(
-                    quantity=quantity,
-                    name=display_name,
-                    zone="main_deck",
-                    set_code=str(best["set_code"]),
-                    card_number=str(best["number"]),
-                    card=best,
+            section_pool = [
+                c for c in pool
+                if str(c.get("card_type")) == section_type and eligible(c)
+            ]
+            picked_in_section = 0
+            while picked_in_section < quota and section_pool:
+                aspect_pool_now = deck_aspect_pool()
+                best = None
+                best_score = float("-inf")
+                best_idx = -1
+                for idx, candidate in enumerate(section_pool):
+                    score = (
+                        base_scores.get(id(candidate), 0.0)
+                        + INTERACTION_WEIGHT * interaction_term(candidate, aspect_pool_now)
+                        + cost_overrun_penalty(candidate)
+                    )
+                    if score > best_score:
+                        best_score = score
+                        best = candidate
+                        best_idx = idx
+                if best is None:
+                    break
+                section_pool.pop(best_idx)
+                deck_so_far.append(best)
+
+                display_name = str(best["display_name"])
+                key = card_key(best)
+                quantity = 1 if normalized_format == TWIN_SUNS else recommended_quantity(best)
+                quantity = min(quantity, copy_limit - id_counts[key])
+                if collection_active:
+                    quantity = min(quantity, self._candidate_owned_count(best))
+                remaining_slots = quota - picked_in_section
+                quantity = min(quantity, remaining_slots)
+                if quantity <= 0:
+                    continue
+                main_cards.append(
+                    DeckCardEntry(
+                        quantity=quantity,
+                        name=display_name,
+                        zone="main_deck",
+                        set_code=str(best["set_code"]),
+                        card_number=str(best["number"]),
+                        card=best,
+                    )
                 )
-            )
-            name_counts[display_name] += quantity
-            type_counts[str(best.get("card_type", "Unit"))] += quantity
+                id_counts[key] += quantity
+                type_counts[section_type] += quantity
+                picked_in_section += quantity
+
+        # Backfill: if any section under-quota'd (e.g. tiny owned pool),
+        # grab top-scoring eligible cards regardless of type to hit deck size.
+        current_total = sum(entry.quantity for entry in main_cards)
+        if current_total < target_main_size:
+            backfill_pool = [c for c in pool if eligible(c)]
+            while current_total < target_main_size and backfill_pool:
+                aspect_pool_now = deck_aspect_pool()
+                best = None
+                best_score = float("-inf")
+                best_idx = -1
+                for idx, candidate in enumerate(backfill_pool):
+                    score = (
+                        base_scores.get(id(candidate), 0.0)
+                        + INTERACTION_WEIGHT * interaction_term(candidate, aspect_pool_now)
+                    )
+                    if score > best_score:
+                        best_score = score
+                        best = candidate
+                        best_idx = idx
+                if best is None:
+                    break
+                backfill_pool.pop(best_idx)
+                deck_so_far.append(best)
+                display_name = str(best["display_name"])
+                key = card_key(best)
+                quantity = 1 if normalized_format == TWIN_SUNS else recommended_quantity(best)
+                quantity = min(quantity, copy_limit - id_counts[key])
+                if collection_active:
+                    quantity = min(quantity, self._candidate_owned_count(best))
+                quantity = min(quantity, target_main_size - current_total)
+                if quantity <= 0:
+                    continue
+                main_cards.append(
+                    DeckCardEntry(
+                        quantity=quantity,
+                        name=display_name,
+                        zone="main_deck",
+                        set_code=str(best["set_code"]),
+                        card_number=str(best["number"]),
+                        card=best,
+                    )
+                )
+                id_counts[key] += quantity
+                type_counts[str(best.get("card_type", "Unit"))] += quantity
+                current_total += quantity
 
         parsed = ParsedDeck(
             format_name=normalized_format,
@@ -925,6 +1124,7 @@ class DeckService:
             "budget": budget,
             "meta_summary": meta_summary,
             "deck": self.export_deck(deck=parsed, export_format="plain_text")["deck"],
+            "deck_holoscan": self.export_deck(deck=parsed, export_format="holoscan")["deck"],
             "validation": validation,
             "analysis": analysis,
             "notes": [
@@ -954,6 +1154,36 @@ class DeckService:
                     "main_deck": [entry_to_export(entry) for entry in parsed.main_deck],
                     "sideboard": [entry_to_export(entry) for entry in parsed.sideboard],
                 },
+            }
+
+        # holoscan: emit `{qty} {SET}/{NNN}` per line — what the HoloScan
+        # mobile app expects when importing decklists by set+number.
+        # Title is intentionally omitted: it's not a parseable card entry and
+        # would round-trip into the main deck as junk.
+        if normalized_format in ("holoscan", "set_number"):
+            def _id(entry: DeckCardEntry) -> str:
+                num = str(entry.card_number or "").strip()
+                if num.isdigit():
+                    num = num.zfill(3)
+                return f"{entry.set_code}/{num}"
+
+            sections = []
+            sections.append("Leaders")
+            sections.extend(f"1 {_id(entry)}" for entry in parsed.leaders)
+            sections.append("")
+            sections.append("Base")
+            sections.extend(f"1 {_id(entry)}" for entry in parsed.bases)
+            sections.append("")
+            sections.append("Main Deck")
+            sections.extend(f"{entry.quantity} {_id(entry)}" for entry in parsed.main_deck)
+            if parsed.sideboard:
+                sections.append("")
+                sections.append("Sideboard")
+                sections.extend(f"{entry.quantity} {_id(entry)}" for entry in parsed.sideboard)
+            return {
+                "format": parsed.format_name,
+                "export_format": normalized_format,
+                "deck": "\n".join(sections).strip(),
             }
 
         sections = []
@@ -1613,6 +1843,20 @@ def parse_deck_line(line: str, *, zone: str) -> DeckCardEntry:
             card_number=bracketed_id.group("number"),
         )
 
+    # Bare `SET/NNN` (HoloScan-style export, no name attached). Name field is
+    # left empty — the resolver will populate it from the catalog using
+    # set_code + card_number, which is the canonical lookup path. Numbers can
+    # run to 4 digits (foil/hyperspace variants reach 4-digit numbering).
+    bare_id = re.match(r"^(?P<set>[A-Z]{2,4})/(?P<number>[0-9]{1,4}[A-Z]?)\s*$", remainder)
+    if bare_id:
+        return DeckCardEntry(
+            quantity=count,
+            name="",
+            zone=zone,
+            set_code=bare_id.group("set"),
+            card_number=bare_id.group("number"),
+        )
+
     prefixed_id = re.match(r"^(?P<set>[A-Z]{2,4})[ /](?P<number>[0-9]{1,3}[A-Z]?)\s+(?P<name>.+)$", remainder)
     if prefixed_id:
         return DeckCardEntry(
@@ -1965,6 +2209,42 @@ def quantity_for_cost(entries: list[DeckCardEntry], minimum: int, maximum: int) 
     return quantity
 
 
+def power_score(card: dict[str, Any]) -> float:
+    """Intrinsic card power, no deck context.
+
+    Calibrated against 10 PQ Premier decks (median 8.2/card). Stat efficiency
+    × 3 capped at 12 for units; +2.5 per keyword; rarity bump per design tier;
+    utility verbs for events/upgrades; -4 for blank-text vanillas.
+    """
+    score = 0.0
+    cost = parse_int(card.get("cost")) or 1
+    ctype = card.get("card_type") or card.get("Type") or ""
+    if ctype == "Unit":
+        p = parse_int(card.get("power")) or 0
+        h = parse_int(card.get("hp")) or 0
+        eff = (p + h) / max(cost, 1)
+        score += min(eff * 3.0, 12.0)
+    keywords = card.get("keywords") or card.get("Keywords") or []
+    score += len(keywords) * 2.5
+    rarity = str(card.get("rarity") or card.get("Rarity") or "").capitalize()
+    score += RARITY_BUMP.get(rarity, 0.0)
+    text_lower = (
+        (card.get("front_text") or card.get("FrontText") or "").lower()
+        + " "
+        + (card.get("epic_action") or card.get("EpicAction") or "").lower()
+    )
+    if ctype in ("Event", "Upgrade"):
+        if any(v in text_lower for v in ("defeat", "destroy", "exhaust", "deal", "damage")):
+            score += 2.0
+        if "draw" in text_lower:
+            score += 3.0
+        if "heal" in text_lower:
+            score += 2.0
+    if not text_lower.strip():
+        score += BLANK_TEXT_PENALTY
+    return score
+
+
 def generation_score(
     *,
     card: dict[str, Any],
@@ -1987,7 +2267,7 @@ def generation_score(
             score += 6
 
     missing_aspects = set(card.get("aspects", [])) - aspect_pool
-    score -= len(missing_aspects) * 15
+    score -= len(missing_aspects) * 25
 
     cost = parse_int(card.get("cost"))
     if cost is not None:
@@ -2010,6 +2290,8 @@ def generation_score(
     if meta_summary:
         matchup_score, _ = score_candidate_for_matchups(card, meta_summary)
         score += matchup_score
+
+    score += POWER_WEIGHT * power_score(card)
     return score
 
 
