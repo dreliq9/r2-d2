@@ -5,6 +5,37 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from .config import settings
+
+
+def _cache_filename(set_code: str, card_number: str) -> str:
+    return f"{set_code.upper()}-{str(card_number).zfill(3)}.json"
+
+
+def _read_card_cache(set_code: str, card_number: str) -> dict | None:
+    path = settings.cache_dir / _cache_filename(set_code, card_number)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _enrichment_fields(set_code: str, card_number: str) -> dict:
+    card = _read_card_cache(set_code, card_number)
+    if not card:
+        return {}
+    return {
+        "name": card.get("Name"),
+        "subtitle": card.get("Subtitle"),
+        "type": card.get("Type"),
+        "rarity": card.get("Rarity"),
+        "keywords": card.get("Keywords", []),
+        "aspects": card.get("Aspects", []),
+        "traits": card.get("Traits", []),
+    }
+
 
 def _normalize_number(value: str | int | None) -> str:
     if value is None:
@@ -62,11 +93,83 @@ class CollectionService:
                     "card_number": entry.card_number,
                     "count": entry.count,
                     "foil_count": entry.foil_count,
+                    **_enrichment_fields(entry.set_code, entry.card_number),
                 }
                 for entry in self._entries.values()
             ],
         }
-        self.storage_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        self.storage_path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+    def _prefetch_card_metadata(self) -> None:
+        """Ensure every owned entry has a cache file. Called before saves that
+        follow a bulk import, so the resulting JSON is fully enriched."""
+        missing = [
+            (e.set_code, e.card_number)
+            for e in self._entries.values()
+            if _read_card_cache(e.set_code, e.card_number) is None
+        ]
+        if not missing:
+            return
+        from .card_service import CardService
+
+        service = CardService()
+        for set_code, card_number in missing:
+            try:
+                service.lookup_card(set_code=set_code, card_number=card_number)
+            except Exception:
+                # Keep going — entry will save without enrichment fields
+                pass
+
+    def _combo_profile_path(self) -> Path:
+        return self.storage_path.with_name(
+            self.storage_path.stem + "_combo_profile.json"
+        )
+
+    def compute_combo_profile(self) -> dict:
+        """Scan all owned cards, tag combo packages, return profile dict.
+
+        Profile includes per-package enabler/payoff counts and a per-card
+        tag map. Stored alongside collection.json for reuse by the brewer.
+        """
+        from .combo_packages import profile_collection
+
+        cards: list[dict] = []
+        for entry in self._entries.values():
+            card = _read_card_cache(entry.set_code, entry.card_number)
+            if not card:
+                continue
+            # Inject lookup_id so profile can reference cards consistently
+            card = dict(card)
+            card["lookup_id"] = (
+                f"{entry.set_code.upper()}/{entry.card_number.zfill(3)}"
+            )
+            cards.append(card)
+
+        profile = profile_collection(cards)
+        profile["card_count"] = len(cards)
+        try:
+            self._combo_profile_path().write_text(
+                json.dumps(profile, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+        return profile
+
+    def get_combo_profile(self, *, refresh: bool = False) -> dict:
+        """Return cached profile, computing it if missing or stale."""
+        self._load_from_disk()
+        path = self._combo_profile_path()
+        if path.exists() and not refresh:
+            try:
+                cached = json.loads(path.read_text(encoding="utf-8"))
+                if cached.get("card_count") == len(self._entries):
+                    return cached
+            except (OSError, json.JSONDecodeError):
+                pass
+        return self.compute_combo_profile()
 
     def load_csv(self, csv_path: str | Path, *, merge: bool = False) -> dict:
         self._load_from_disk()
@@ -114,7 +217,14 @@ class CollectionService:
                     foil_count=new_foil,
                 )
                 imported += 1
+        self._prefetch_card_metadata()
         self._save_to_disk()
+        # Recompute combo profile so the brewer can use up-to-date enabler
+        # and payoff counts on the next deck generation.
+        try:
+            self.compute_combo_profile()
+        except Exception:
+            pass
         result = {
             "ok": True,
             "csv_path": str(resolved),

@@ -25,12 +25,119 @@ INTERACTION_CAP_PER_PAIR = 1
 POWER_WEIGHT = 1.0
 BLANK_TEXT_PENALTY = -4.0
 RARITY_BUMP = {"Common": 0.0, "Uncommon": 1.0, "Rare": 3.0, "Legendary": 5.0, "Special": 2.0}
-TARGET_AVG_COST = 3.4
+# Premier's larger min deck and 3-of copies tolerate a higher curve. Twin Suns
+# is singleton at 80+ cards, so community guides recommend a noticeably lower
+# curve to absorb the extra variance — see Nerdologists, Garbage Rollers.
+TARGET_AVG_COST_PREMIER = 3.4
+TARGET_AVG_COST_TWIN_SUNS = 2.7
+TARGET_AVG_COST = TARGET_AVG_COST_PREMIER  # back-compat for existing references
 COST_OVERRUN_W = -3.0
+# Off-aspect singletons hurt twice in Twin Suns: you pay the +2 *and* you can't
+# resource around it because there's only one copy. Stronger negative weight.
+OFF_ASPECT_PER_ICON_PREMIER = -25.0
+OFF_ASPECT_PER_ICON_TWIN_SUNS = -40.0
+# Twin Suns guide hooks (official article + community): keywords that close
+# games quickly matter more because singleton makes finishers harder to find.
+TWIN_SUNS_BASE_PRESSURE_KEYWORDS = {"Ambush", "Overwhelm", "Saboteur", "Raid"}
+TWIN_SUNS_BASE_PRESSURE_BONUS = 3.0
+TWIN_SUNS_LEADER_SYNERGY_BONUS = 4.0
+
+# Per-aspect role identity (synthesized from SWU community deckbuilding guides:
+# Dexerto archetype guide, Card Gamer aspects guide, The Fifth Trooper, and
+# Garbage Rollers' color power rankings). Cards that express their aspect's
+# signature role get a small consistency bonus on top of being on-aspect —
+# this nudges the generator toward cards that actually *play* the aspect's
+# strategy rather than just sharing its color.
+ASPECT_AFFINITY: dict[str, dict[str, set[str]]] = {
+    "Aggression": {
+        "keywords": {"Saboteur", "Raid", "Overwhelm"},
+        "text_tokens": {"deal ", " damage to a unit", " damage to a base"},
+    },
+    "Vigilance": {
+        "keywords": {"Sentinel", "Shielded", "Restore", "Grit"},
+        "text_tokens": {"shield token", "heal"},
+    },
+    "Command": {
+        "keywords": {"Restore"},
+        "text_tokens": {"create", "ready a", "extra resource", " token"},
+    },
+    "Cunning": {
+        "keywords": {"Ambush"},
+        "text_tokens": {"discard", "exhaust", "return"},
+    },
+    "Heroism": {
+        # No single keyword owns Heroism — its identity is wide boards.
+        "keywords": set(),
+        "text_tokens": {"for each friendly", "for each unit", "each other friendly"},
+    },
+    "Villainy": {
+        "keywords": set(),
+        "text_tokens": {"when defeated", "sacrifice"},
+    },
+}
+ASPECT_AFFINITY_BONUS = 2.5
+
+# Color-pie analog: which aspect "owns" each keyword (primary printing home).
+# Derived empirically from a 463-card collection analysis (counted only the 4
+# neutral aspects, since Heroism/Villainy overlay any neutral). When a card's
+# keyword matches its aspect's primary, give a small consistency bonus.
+PRIMARY_KEYWORD_BY_ASPECT: dict[str, set[str]] = {
+    "Aggression": {"Overwhelm", "Raid", "Saboteur"},
+    "Vigilance":  {"Sentinel", "Shielded", "Grit"},
+    "Command":    {"Restore", "Ambush"},
+    "Cunning":    {"Hidden", "Ambush", "Piloting"},
+    "Heroism": set(),   # moral aspects don't own keywords
+    "Villainy": set(),
+}
+COLOR_PIE_BONUS = 1.5
+
+# Keyword synergy pairs: when a card has BOTH keywords from a designed-synergy
+# cluster, the whole is more than the sum of parts. Bonuses stack across pairs.
+# Pairs derived from co-occurrence analysis of the collection plus known
+# functional combos (anti-defense bypass, fortress walls, sustain engines).
+KEYWORD_SYNERGY_PAIRS: list[frozenset[str]] = [
+    frozenset({"Hidden", "Raid"}),         # stealth burst
+    frozenset({"Saboteur", "Sentinel"}),   # bypass + provoke
+    frozenset({"Saboteur", "Raid"}),       # bigger anti-defense burst
+    frozenset({"Saboteur", "Ambush"}),     # surprise that ignores Sentinel
+    frozenset({"Overwhelm", "Raid"}),      # finisher push
+    frozenset({"Grit", "Sentinel"}),       # walls that grow when hit
+    frozenset({"Grit", "Shielded"}),       # absorb-then-grow fortress
+    frozenset({"Grit", "Restore"}),        # damaged healer
+    frozenset({"Grit", "Overwhelm"}),      # grow + push excess
+    frozenset({"Restore", "Sentinel"}),    # protected healer
+    frozenset({"Restore", "Shielded"}),    # self-protecting healer
+    frozenset({"Hidden", "Shielded"}),     # double untargetable
+    frozenset({"Hidden", "Ambush"}),       # surprise unblockable
+    frozenset({"Ambush", "Restore"}),      # enter and heal
+]
+KEYWORD_SYNERGY_BONUS = 2.0
 
 PREMIER = "premier"
 TWIN_SUNS = "twin_suns"
 SUPPORTED_FORMATS = {PREMIER, TWIN_SUNS}
+
+_COPY_OVERRIDE_RE = __import__("re").compile(
+    r"a deck can have (?:up to (\d+)|any number of) copies of this card",
+    __import__("re").IGNORECASE,
+)
+
+
+def card_copy_override(card: dict | None) -> int | None:
+    """Return the per-card copy limit override declared on the card text, if any.
+    `None` means no override (use the format default). A very large int models
+    'any number'."""
+    if not card:
+        return None
+    text = str(card.get("front_text") or card.get("FrontText") or "")
+    if not text:
+        return None
+    m = _COPY_OVERRIDE_RE.search(text)
+    if not m:
+        return None
+    if m.group(1):
+        return int(m.group(1))
+    return 999  # "any number"
 
 PREMIER_MAIN_DECK_MIN = 50
 PREMIER_SIDEBOARD_MAX = 10
@@ -902,6 +1009,7 @@ class DeckService:
                 aspect_pool=aspect_pool,
                 budget=budget,
                 meta_summary=meta_summary,
+                format_name=normalized_format,
             )
 
         # Cache provides/needs/traits sets for every card we may score against.
@@ -922,6 +1030,56 @@ class DeckService:
         deck_so_far: list[dict[str, Any]] = list(leaders) + [base]
         for anchor in deck_so_far:
             get_interaction_sets(anchor)
+
+        # Combo-package context: pre-tag every card we might pick + the anchors,
+        # then score candidates by how much they reinforce a package the deck
+        # is already building toward.
+        from .combo_packages import tag_card as _tag_card
+        combo_tag_cache: dict[int, dict[str, list[str]]] = {}
+        def _tags_for(card: dict[str, Any]) -> dict[str, list[str]]:
+            cached = combo_tag_cache.get(id(card))
+            if cached is not None:
+                return cached
+            tags = _tag_card(card)
+            combo_tag_cache[id(card)] = tags
+            return tags
+        for anchor in deck_so_far:
+            _tags_for(anchor)
+
+        # Running per-package support count from the current deck.
+        package_support: Counter[str] = Counter()
+        for anchor in deck_so_far:
+            tags = _tags_for(anchor)
+            for p in tags["enables"]:
+                package_support[p] += 1
+            for p in tags["pays_off"]:
+                package_support[p] += 1
+
+        COMBO_ACTIVE_THRESHOLD = 2     # at least N supporters → +2 per pkg
+        COMBO_STRONG_THRESHOLD = 5     # at least N supporters → +3 per pkg
+        COMBO_BONUS_CAP = 6.0          # max combo bonus per candidate
+
+        def combo_term(candidate: dict[str, Any]) -> float:
+            tags = _tags_for(candidate)
+            cand_pkgs = set(tags["enables"]) | set(tags["pays_off"])
+            if not cand_pkgs:
+                return 0.0
+            total = 0.0
+            for pkg in cand_pkgs:
+                support = package_support[pkg]
+                if support >= COMBO_STRONG_THRESHOLD:
+                    total += 3.0
+                elif support >= COMBO_ACTIVE_THRESHOLD:
+                    total += 2.0
+                # else: package has no foothold yet — no bonus
+            return min(total, COMBO_BONUS_CAP)
+
+        def record_combo_pick(card: dict[str, Any]) -> None:
+            tags = _tags_for(card)
+            for p in tags["enables"]:
+                package_support[p] += 1
+            for p in tags["pays_off"]:
+                package_support[p] += 1
 
         def deck_aspect_pool() -> set[str]:
             return {
@@ -959,12 +1117,17 @@ class DeckService:
 
         # Soft curve penalty: once running average cost exceeds target, penalise
         # any candidate above the running average proportionally to overshoot.
+        target_avg_cost = (
+            TARGET_AVG_COST_TWIN_SUNS
+            if normalized_format == TWIN_SUNS
+            else TARGET_AVG_COST_PREMIER
+        )
         def cost_overrun_penalty(candidate: dict[str, Any]) -> float:
             picked_costs = [parse_int((d.get("cost") or d.get("Cost"))) or 0 for d in deck_so_far if d.get("card_type") == "Unit"]
             if not picked_costs:
                 return 0.0
             avg_now = sum(picked_costs) / len(picked_costs)
-            if avg_now <= TARGET_AVG_COST:
+            if avg_now <= target_avg_cost:
                 return 0.0
             cand_cost = parse_int(candidate.get("cost")) or 0
             if cand_cost <= avg_now:
@@ -1003,6 +1166,7 @@ class DeckService:
                         base_scores.get(id(candidate), 0.0)
                         + INTERACTION_WEIGHT * interaction_term(candidate, aspect_pool_now)
                         + cost_overrun_penalty(candidate)
+                        + combo_term(candidate)
                     )
                     if score > best_score:
                         best_score = score
@@ -1012,11 +1176,20 @@ class DeckService:
                     break
                 section_pool.pop(best_idx)
                 deck_so_far.append(best)
+                record_combo_pick(best)
 
                 display_name = str(best["display_name"])
                 key = card_key(best)
-                quantity = 1 if normalized_format == TWIN_SUNS else recommended_quantity(best)
-                quantity = min(quantity, copy_limit - id_counts[key])
+                # Honor per-card "up to N copies" overrides (Swarming Vulture
+                # Droid, Battle Droid swarm, etc) — singleton format still lets
+                # these go to multiple copies.
+                override = card_copy_override(best)
+                if normalized_format == TWIN_SUNS:
+                    quantity = override if override and override > 1 else 1
+                else:
+                    quantity = recommended_quantity(best)
+                effective_limit = max(copy_limit, override) if override else copy_limit
+                quantity = min(quantity, effective_limit - id_counts[key])
                 if collection_active:
                     quantity = min(quantity, self._candidate_owned_count(best))
                 remaining_slots = quota - picked_in_section
@@ -1051,6 +1224,7 @@ class DeckService:
                     score = (
                         base_scores.get(id(candidate), 0.0)
                         + INTERACTION_WEIGHT * interaction_term(candidate, aspect_pool_now)
+                        + combo_term(candidate)
                     )
                     if score > best_score:
                         best_score = score
@@ -1060,10 +1234,16 @@ class DeckService:
                     break
                 backfill_pool.pop(best_idx)
                 deck_so_far.append(best)
+                record_combo_pick(best)
                 display_name = str(best["display_name"])
                 key = card_key(best)
-                quantity = 1 if normalized_format == TWIN_SUNS else recommended_quantity(best)
-                quantity = min(quantity, copy_limit - id_counts[key])
+                override = card_copy_override(best)
+                if normalized_format == TWIN_SUNS:
+                    quantity = override if override and override > 1 else 1
+                else:
+                    quantity = recommended_quantity(best)
+                effective_limit = max(copy_limit, override) if override else copy_limit
+                quantity = min(quantity, effective_limit - id_counts[key])
                 if collection_active:
                     quantity = min(quantity, self._candidate_owned_count(best))
                 quantity = min(quantity, target_main_size - current_total)
@@ -1323,9 +1503,16 @@ class DeckService:
         sideboard_counts = entry_quantity_by_name(deck.sideboard)
         combined_counts = entry_quantity_by_name(deck.main_deck + deck.sideboard)
         copy_limit = 1 if deck.format_name == TWIN_SUNS else PREMIER_COPY_LIMIT
+        # Per-card overrides come from card text like "A deck can have up to N copies of this card."
+        card_by_name: dict[str, dict] = {}
+        for entry in deck.main_deck + deck.sideboard:
+            if entry.card and entry.display_name not in card_by_name:
+                card_by_name[entry.display_name] = entry.card
         for name, quantity in sorted(combined_counts.items()):
-            if quantity > copy_limit:
-                errors.append(f"{name} appears {quantity} times; the format limit is {copy_limit}.")
+            override = card_copy_override(card_by_name.get(name))
+            effective_limit = max(copy_limit, override) if override is not None else copy_limit
+            if quantity > effective_limit:
+                errors.append(f"{name} appears {quantity} times; the format limit is {effective_limit}.")
 
         if deck.format_name == TWIN_SUNS:
             alignment = shared_alignment(deck.leaders)
@@ -2252,6 +2439,7 @@ def generation_score(
     aspect_pool: set[str],
     budget: str | None,
     meta_summary: dict[str, Any] | None = None,
+    format_name: str = PREMIER,
 ) -> float:
     score = 0.0
     searchable = " ".join(
@@ -2267,7 +2455,12 @@ def generation_score(
             score += 6
 
     missing_aspects = set(card.get("aspects", [])) - aspect_pool
-    score -= len(missing_aspects) * 25
+    off_aspect_w = (
+        OFF_ASPECT_PER_ICON_TWIN_SUNS
+        if format_name == TWIN_SUNS
+        else OFF_ASPECT_PER_ICON_PREMIER
+    )
+    score += len(missing_aspects) * off_aspect_w
 
     cost = parse_int(card.get("cost"))
     if cost is not None:
@@ -2277,6 +2470,53 @@ def generation_score(
             score += 4
         else:
             score += 1
+        # Twin Suns: extra weight on cheap units to honor the lower-curve advice.
+        if format_name == TWIN_SUNS and cost <= 2:
+            score += 2
+
+    if format_name == TWIN_SUNS:
+        keywords = set(card.get("keywords", []) or [])
+        if keywords & TWIN_SUNS_BASE_PRESSURE_KEYWORDS:
+            score += TWIN_SUNS_BASE_PRESSURE_BONUS
+        # Leader-interaction synergy: cards that mention "leader" in text are
+        # disproportionately good in a 2-leader format.
+        front_text = str(card.get("front_text", "") or "").lower()
+        if "leader" in front_text:
+            score += TWIN_SUNS_LEADER_SYNERGY_BONUS
+
+    # Aspect affinity: when a card both shares an aspect with the deck AND
+    # expresses that aspect's signature role (per community guides), reward
+    # consistency. Capped at one bonus per card so dual-aspect cards don't
+    # double-stack.
+    card_aspects = set(card.get("aspects", []))
+    shared_aspects = card_aspects & aspect_pool
+    kw_set = set(card.get("keywords", []) or [])
+    if shared_aspects:
+        text_lower = str(card.get("front_text", "") or "").lower()
+        for asp in shared_aspects:
+            sig = ASPECT_AFFINITY.get(asp)
+            if not sig:
+                continue
+            if (kw_set & sig["keywords"]) or any(
+                tok in text_lower for tok in sig["text_tokens"]
+            ):
+                score += ASPECT_AFFINITY_BONUS
+                break
+
+        # Color-pie: keyword printed in its primary aspect's home is more
+        # internally-consistent. Capped at one bonus per card.
+        for asp in shared_aspects:
+            primary = PRIMARY_KEYWORD_BY_ASPECT.get(asp, set())
+            if kw_set & primary:
+                score += COLOR_PIE_BONUS
+                break
+
+    # Keyword synergy pairs: stack a bonus per designed-combo pair the card
+    # carries. Aspect-independent — these are mechanical interactions.
+    if len(kw_set) >= 2:
+        for pair in KEYWORD_SYNERGY_PAIRS:
+            if pair <= kw_set:
+                score += KEYWORD_SYNERGY_BONUS
 
     rarity = str(card.get("rarity", "")).lower()
     if budget and budget.lower() in {"budget", "cheap"}:

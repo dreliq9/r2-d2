@@ -354,6 +354,21 @@ def swu_collection_summary() -> dict:
     return collection_service.summary()
 
 
+@mcp.tool(description=(
+    "Profile the loaded collection for combo-package density. Returns per-package "
+    "enabler/payoff counts (Force engine, Indirect damage, When Defeated, Pilot/"
+    "Vehicle, Token swarm, Cost reduction, Fortress, Bounty Hunter, Mandalorian) "
+    "and flags which are 'live' (≥4 enablers + ≥2 payoffs). "
+    "Pass refresh=true to recompute from scratch."
+))
+def swu_collection_combo_profile(refresh: bool = False) -> dict:
+    profile = collection_service.get_combo_profile(refresh=refresh)
+    return {
+        "card_count": profile.get("card_count", 0),
+        "packages": profile["packages"],
+    }
+
+
 @mcp.tool(description="Return how many copies of a specific Star Wars Unlimited printing the user owns. Use set_code and card_number (e.g. LOF 47).")
 def swu_owned_count(set_code: str, card_number: str) -> dict:
     count = collection_service.owned_count(set_code=set_code, card_number=card_number)
