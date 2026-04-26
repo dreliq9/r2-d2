@@ -1493,24 +1493,41 @@ class DeckService:
                 "Leader-pair ranking is only meaningful for Twin Suns format."
             )
 
-        # Build the candidate leader pool. Always use "*" so we get every
-        # leader matching the structural filters — using `theme` as the query
-        # silently drops leaders whose text doesn't share tokens with the
-        # theme (e.g. Qui-Gon's "Return a friendly non-leader unit" doesn't
-        # mention "force engine" so a theme-keyword search would miss him).
-        # The theme is for scoring, not pool selection.
+        # Build the candidate leader pool. Two paths:
+        # - only_owned=True: walk the collection directly. The API search
+        #   has a hard 100-result cap that silently excludes some leaders
+        #   (Qui-Gon Jinn, Obi-Wan Kenobi found missing in testing). Going
+        #   through the collection is more reliable when we already know
+        #   the user owns the cards.
+        # - only_owned=False: fall back to the API search.
         self.card_service._ensure_local_catalog()
         leaders: list[dict[str, Any]] = []
-        try:
-            result = self.card_service.search_cards(
-                query="*", filters={"type": "Leader"}, limit=200
-            )
-        except Exception:
-            result = {"cards": []}
-        for card in result.get("cards", []):
-            looked_up = self._safe_lookup(card)
-            if looked_up is not None and looked_up.get("card_type") == "Leader":
-                leaders.append(looked_up)
+        if only_owned and self.collection_service is not None:
+            # Iterate every owned entry and filter to leaders via card lookup.
+            self.collection_service._load_from_disk()
+            for entry in self.collection_service._entries.values():
+                # Cheap filter using collection metadata if present.
+                # If type isn't on the entry yet, lookup_card will tell us.
+                try:
+                    detail = self.card_service.lookup_card(
+                        set_code=entry.set_code,
+                        card_number=entry.card_number,
+                    )
+                except Exception:
+                    continue
+                if detail.get("card_type") == "Leader":
+                    leaders.append(detail)
+        else:
+            try:
+                result = self.card_service.search_cards(
+                    query="*", filters={"type": "Leader"}, limit=200
+                )
+            except Exception:
+                result = {"cards": []}
+            for card in result.get("cards", []):
+                looked_up = self._safe_lookup(card)
+                if looked_up is not None and looked_up.get("card_type") == "Leader":
+                    leaders.append(looked_up)
 
         # Dedup by lookup_id and treat alt-art reprints (same name+subtitle)
         # as the same leader so we don't pair a printing with itself.
