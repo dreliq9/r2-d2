@@ -1494,29 +1494,45 @@ class DeckService:
             )
 
         # Build the candidate leader pool. Two paths:
-        # - only_owned=True: walk the collection directly. The API search
-        #   has a hard 100-result cap that silently excludes some leaders
-        #   (Qui-Gon Jinn, Obi-Wan Kenobi found missing in testing). Going
-        #   through the collection is more reliable when we already know
-        #   the user owns the cards.
+        # - only_owned=True: walk the collection directly via the local
+        #   cache (NOT lookup_card, which hits the API for every entry).
+        #   The API search has a hard 100-result cap that silently
+        #   excludes some leaders.
         # - only_owned=False: fall back to the API search.
         self.card_service._ensure_local_catalog()
         leaders: list[dict[str, Any]] = []
         if only_owned and self.collection_service is not None:
-            # Iterate every owned entry and filter to leaders via card lookup.
+            from .collection_service import _read_card_cache
             self.collection_service._load_from_disk()
             for entry in self.collection_service._entries.values():
-                # Cheap filter using collection metadata if present.
-                # If type isn't on the entry yet, lookup_card will tell us.
-                try:
-                    detail = self.card_service.lookup_card(
-                        set_code=entry.set_code,
-                        card_number=entry.card_number,
-                    )
-                except Exception:
+                cached = _read_card_cache(entry.set_code, entry.card_number)
+                if not cached or cached.get("Type") != "Leader":
                     continue
-                if detail.get("card_type") == "Leader":
-                    leaders.append(detail)
+                normalized = {
+                    "lookup_id": f"{entry.set_code.upper()}/{str(entry.card_number).zfill(3)}",
+                    "set_code": entry.set_code.upper(),
+                    "number": str(entry.card_number).zfill(3),
+                    "name": cached.get("Name"),
+                    "subtitle": cached.get("Subtitle"),
+                    "display_name": (
+                        f"{cached.get('Name')} - {cached.get('Subtitle')}"
+                        if cached.get("Subtitle")
+                        else cached.get("Name")
+                    ),
+                    "card_type": cached.get("Type"),
+                    "type": cached.get("Type"),
+                    "aspects": cached.get("Aspects") or [],
+                    "traits": cached.get("Traits") or [],
+                    "keywords": cached.get("Keywords") or [],
+                    "hp": cached.get("HP"),
+                    "power": cached.get("Power"),
+                    "cost": cached.get("Cost"),
+                    "front_text": cached.get("FrontText") or "",
+                    "back_text": cached.get("BackText") or "",
+                    "epic_action": cached.get("EpicAction") or "",
+                    "rarity": cached.get("Rarity"),
+                }
+                leaders.append(normalized)
         else:
             try:
                 result = self.card_service.search_cards(
@@ -2431,20 +2447,43 @@ class DeckService:
             # Higher new-aspect count first, then higher HP as tiebreak.
             return (new_aspects, hp)
 
-        # When only_owned, walk the collection's owned bases directly so
-        # we don't lose candidates to API search caps.
+        # When only_owned, walk the collection's owned bases via the local
+        # cache (NOT via lookup_card, which hits the API every time and
+        # explodes when this method runs hundreds of times during a
+        # leader-pair ranking sweep). The cache file stores the same data
+        # the API would return.
         if only_owned and self.collection_service is not None:
+            from .collection_service import _read_card_cache
+            from .config import settings
             self.collection_service._load_from_disk()
             owned_bases: list[dict[str, Any]] = []
             for entry in self.collection_service._entries.values():
-                try:
-                    detail = self.card_service.lookup_card(
-                        set_code=entry.set_code, card_number=entry.card_number,
-                    )
-                except Exception:
+                cached = _read_card_cache(entry.set_code, entry.card_number)
+                if not cached or cached.get("Type") != "Base":
                     continue
-                if detail.get("card_type") == "Base":
-                    owned_bases.append(detail)
+                # Normalize to the lookup_card-style dict shape so downstream
+                # consumers (which expect lower-cased keys) keep working.
+                normalized = {
+                    "lookup_id": f"{entry.set_code.upper()}/{str(entry.card_number).zfill(3)}",
+                    "set_code": entry.set_code.upper(),
+                    "number": str(entry.card_number).zfill(3),
+                    "name": cached.get("Name"),
+                    "subtitle": cached.get("Subtitle"),
+                    "display_name": (
+                        f"{cached.get('Name')} - {cached.get('Subtitle')}"
+                        if cached.get("Subtitle")
+                        else cached.get("Name")
+                    ),
+                    "card_type": cached.get("Type"),
+                    "type": cached.get("Type"),
+                    "aspects": cached.get("Aspects") or [],
+                    "traits": cached.get("Traits") or [],
+                    "keywords": cached.get("Keywords") or [],
+                    "hp": cached.get("HP"),
+                    "front_text": cached.get("FrontText") or "",
+                    "rarity": cached.get("Rarity"),
+                }
+                owned_bases.append(normalized)
             if owned_bases:
                 owned_bases.sort(key=_score_base, reverse=True)
                 return owned_bases[0]
