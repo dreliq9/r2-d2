@@ -1313,6 +1313,176 @@ class DeckService:
             ],
         }
 
+    def rank_leader_pairs(
+        self,
+        *,
+        theme: str = "",
+        format_name: str = TWIN_SUNS,
+        primary_aspects: list[str] | None = None,
+        moral: str | None = None,
+        only_owned: bool = True,
+        top_k: int = 5,
+        base_name: str | None = None,
+        include_decks: bool = False,
+    ) -> dict[str, Any]:
+        """Brew a deck for every legal leader pairing and rank them.
+
+        Twin Suns requires the two leaders to share Heroism or Villainy. This
+        method enumerates all such pairs from the (optionally owned) leader
+        pool, runs `generate_deck` for each, and returns the top_k ranked by
+        a composite score: synergy + interaction density - off-aspect burden.
+
+        moral: restrict to "Heroism" or "Villainy" pairs (default: both).
+        primary_aspects: filter leaders whose aspects intersect this set.
+        """
+        normalized_format = normalize_format(format_name)
+        if normalized_format != TWIN_SUNS:
+            raise ValueError(
+                "Leader-pair ranking is only meaningful for Twin Suns format."
+            )
+
+        # Build the candidate leader pool. Use a broad search so we surface
+        # leaders we don't have local-catalog matches for.
+        self.card_service._ensure_local_catalog()
+        leaders: list[dict[str, Any]] = []
+        for query in (theme, "*"):
+            if not query:
+                continue
+            try:
+                result = self.card_service.search_cards(
+                    query=query, filters={"type": "Leader"}, limit=100
+                )
+            except Exception:
+                continue
+            for card in result.get("cards", []):
+                looked_up = self._safe_lookup(card)
+                if looked_up is not None and looked_up.get("card_type") == "Leader":
+                    leaders.append(looked_up)
+            if leaders:
+                break
+
+        # Dedup by lookup_id and treat alt-art reprints (same name+subtitle)
+        # as the same leader so we don't pair a printing with itself.
+        seen_ids: set[str] = set()
+        seen_idents: set[tuple[str, str]] = set()
+        deduped: list[dict[str, Any]] = []
+        for leader in leaders:
+            lid = str(leader.get("lookup_id") or "")
+            if lid in seen_ids:
+                continue
+            seen_ids.add(lid)
+            ident = (
+                str(leader.get("name", "")).strip().lower(),
+                str(leader.get("subtitle", "") or "").strip().lower(),
+            )
+            if ident in seen_idents:
+                continue
+            seen_idents.add(ident)
+            deduped.append(leader)
+        leaders = deduped
+
+        if only_owned and self.collection_service is not None:
+            leaders = [
+                leader for leader in leaders if self._candidate_is_owned(leader)
+            ]
+
+        if primary_aspects:
+            wanted = set(primary_aspects)
+            leaders = [
+                leader for leader in leaders
+                if set(leader.get("aspects") or []) & wanted
+            ]
+
+        if moral:
+            normalized_moral = moral.strip().capitalize()
+            leaders = [
+                leader for leader in leaders
+                if normalized_moral in (leader.get("aspects") or [])
+            ]
+
+        # Enumerate unique unordered pairs that share Heroism or Villainy.
+        pairs: list[tuple[dict, dict, str]] = []
+        for i, first in enumerate(leaders):
+            asps_a = set(first.get("aspects") or [])
+            for second in leaders[i + 1:]:
+                asps_b = set(second.get("aspects") or [])
+                shared_morals = asps_a & asps_b & {"Heroism", "Villainy"}
+                if not shared_morals:
+                    continue
+                pairs.append((first, second, sorted(shared_morals)[0]))
+
+        if not pairs:
+            return {
+                "format": normalized_format,
+                "theme": theme,
+                "moral_filter": moral,
+                "leader_pool_size": len(leaders),
+                "pairs_considered": 0,
+                "ranked": [],
+                "note": "No valid pairs found. Loosen filters or add owned=False.",
+            }
+
+        # Brew + score each pair. Failures are logged but don't kill the run.
+        results: list[dict[str, Any]] = []
+        for first, second, shared in pairs:
+            pair_names = [str(first["display_name"]), str(second["display_name"])]
+            try:
+                brew = self.generate_deck(
+                    theme=theme or "Twin Suns leader-pair brew",
+                    format_name=normalized_format,
+                    leader_names=pair_names,
+                    base_name=base_name,
+                    only_owned=only_owned,
+                )
+            except Exception as exc:
+                results.append({
+                    "leaders": pair_names,
+                    "shared_moral": shared,
+                    "error": str(exc),
+                    "score": float("-inf"),
+                })
+                continue
+            analysis = brew.get("analysis", {})
+            validation = brew.get("validation", {})
+            synergy = float(analysis.get("synergy_score") or 0)
+            interaction = float(analysis.get("interaction_density") or 0)
+            burden = float(
+                validation.get("aspect_penalties", {}).get(
+                    "total_extra_resource_burden", 0
+                )
+            )
+            score = synergy + (interaction / 5.0) - (2.0 * burden)
+            entry: dict[str, Any] = {
+                "leaders": pair_names,
+                "shared_moral": shared,
+                "base": (analysis.get("base") or brew.get("deck_summary", {}).get("bases", [None])[0]),
+                "available_aspects": analysis.get("available_aspects"),
+                "synergy_score": synergy,
+                "interaction_density": interaction,
+                "burden": burden,
+                "avg_cost": analysis.get("average_cost"),
+                "deck_size": analysis.get("deck_size"),
+                "trait_breakdown": analysis.get("trait_breakdown"),
+                "role_breakdown": analysis.get("role_breakdown"),
+                "score": round(score, 2),
+            }
+            if include_decks:
+                entry["deck_holoscan"] = brew.get("deck_holoscan")
+            results.append(entry)
+
+        results.sort(key=lambda r: r.get("score", float("-inf")), reverse=True)
+        return {
+            "format": normalized_format,
+            "theme": theme,
+            "moral_filter": moral,
+            "leader_pool_size": len(leaders),
+            "pairs_considered": len(pairs),
+            "ranked": results[:top_k],
+            "scoring": (
+                "score = synergy_score + interaction_density/5 - 2 × off_aspect_burden"
+            ),
+        }
+
     def export_deck(
         self,
         *,

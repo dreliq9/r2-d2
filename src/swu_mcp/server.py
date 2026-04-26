@@ -344,6 +344,37 @@ def swu_generate_deck(
     )
 
 
+@mcp.tool(description=(
+    "Twin Suns only — brew a deck for every legal leader pairing in your "
+    "owned pool and rank them by composite score (synergy + interaction "
+    "density - off-aspect burden). Use moral='Heroism' or 'Villainy' to "
+    "narrow. primary_aspects filters leaders whose aspects intersect the "
+    "given list. include_decks=true returns full holoscan lists for the "
+    "top_k results. Useful for surfacing leader pairs you wouldn't have "
+    "considered manually."
+))
+def swu_rank_leader_pairs(
+    theme: str = "",
+    format_name: str = "twin_suns",
+    primary_aspects: list[str] | None = None,
+    moral: str | None = None,
+    only_owned: bool = True,
+    top_k: int = 5,
+    base_name: str | None = None,
+    include_decks: bool = False,
+) -> dict:
+    return deck_service.rank_leader_pairs(
+        theme=theme,
+        format_name=format_name,
+        primary_aspects=primary_aspects,
+        moral=moral,
+        only_owned=only_owned,
+        top_k=top_k,
+        base_name=base_name,
+        include_decks=include_decks,
+    )
+
+
 @mcp.tool(description="Import a Star Wars Unlimited card collection from a SWUDB CSV export (columns: Set, CardNumber, Count, IsFoil). Persists to disk. Set merge=True to add to existing collection instead of replacing it.")
 def swu_load_collection(csv_path: str, merge: bool = False) -> dict:
     return collection_service.load_csv(csv_path, merge=merge)
