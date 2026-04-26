@@ -1423,25 +1423,24 @@ class DeckService:
                 "Leader-pair ranking is only meaningful for Twin Suns format."
             )
 
-        # Build the candidate leader pool. Use a broad search so we surface
-        # leaders we don't have local-catalog matches for.
+        # Build the candidate leader pool. Always use "*" so we get every
+        # leader matching the structural filters — using `theme` as the query
+        # silently drops leaders whose text doesn't share tokens with the
+        # theme (e.g. Qui-Gon's "Return a friendly non-leader unit" doesn't
+        # mention "force engine" so a theme-keyword search would miss him).
+        # The theme is for scoring, not pool selection.
         self.card_service._ensure_local_catalog()
         leaders: list[dict[str, Any]] = []
-        for query in (theme, "*"):
-            if not query:
-                continue
-            try:
-                result = self.card_service.search_cards(
-                    query=query, filters={"type": "Leader"}, limit=100
-                )
-            except Exception:
-                continue
-            for card in result.get("cards", []):
-                looked_up = self._safe_lookup(card)
-                if looked_up is not None and looked_up.get("card_type") == "Leader":
-                    leaders.append(looked_up)
-            if leaders:
-                break
+        try:
+            result = self.card_service.search_cards(
+                query="*", filters={"type": "Leader"}, limit=200
+            )
+        except Exception:
+            result = {"cards": []}
+        for card in result.get("cards", []):
+            looked_up = self._safe_lookup(card)
+            if looked_up is not None and looked_up.get("card_type") == "Leader":
+                leaders.append(looked_up)
 
         # Dedup by lookup_id and treat alt-art reprints (same name+subtitle)
         # as the same leader so we don't pair a printing with itself.
