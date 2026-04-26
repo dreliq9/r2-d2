@@ -113,6 +113,43 @@ KEYWORD_SYNERGY_PAIRS: list[frozenset[str]] = [
 ]
 KEYWORD_SYNERGY_BONUS = 2.0
 
+# Theme keyword → combo package(s) it implies. Used by rank_leader_pairs to
+# weight package-fit when scoring brewed pairings against a stated theme.
+THEME_TO_PACKAGES: dict[str, set[str]] = {
+    "force":       {"force_engine"},
+    "jedi":        {"force_engine"},
+    "lightsaber":  {"force_engine"},
+    "indirect":    {"indirect_damage"},
+    "bounty":      {"bounty_hunter", "indirect_damage"},
+    "hunter":      {"bounty_hunter"},
+    "defeat":      {"when_defeated"},
+    "sacrifice":   {"when_defeated"},
+    "exploit":     {"when_defeated"},
+    "death":       {"when_defeated"},
+    "pilot":       {"pilot_vehicle"},
+    "vehicle":     {"pilot_vehicle"},
+    "fighter":     {"pilot_vehicle"},
+    "token":       {"token_swarm"},
+    "swarm":       {"token_swarm"},
+    "wide":        {"token_swarm"},
+    "ramp":        {"cost_reduction"},
+    "discount":    {"cost_reduction"},
+    "cheap":       {"cost_reduction"},
+    "sentinel":    {"fortress"},
+    "defense":     {"fortress"},
+    "defensive":   {"fortress"},
+    "wall":        {"fortress"},
+    "fortress":    {"fortress"},
+    "control":     {"fortress"},
+    "exhaust":     {"exhaust_engine"},
+    "ready":       {"exhaust_engine"},
+    "tap":         {"exhaust_engine"},
+    "mandalorian": {"mandalorian"},
+    "mando":       {"mandalorian"},
+}
+THEME_FIT_PER_MATCH = 0.5
+THEME_FIT_CAP = 25.0
+
 PREMIER = "premier"
 TWIN_SUNS = "twin_suns"
 SUPPORTED_FORMATS = {PREMIER, TWIN_SUNS}
@@ -1422,7 +1459,56 @@ class DeckService:
                 "note": "No valid pairs found. Loosen filters or add owned=False.",
             }
 
+        # Theme parsing — extract which combo packages this brew should
+        # express. If the theme mentions "force"/"jedi", we'll bonus decks
+        # heavy in force_engine-tagged cards, etc.
+        theme_lower = (theme or "").lower()
+        target_packages: set[str] = set()
+        for keyword, pkgs in THEME_TO_PACKAGES.items():
+            if keyword in theme_lower:
+                target_packages |= pkgs
+
         # Brew + score each pair. Failures are logged but don't kill the run.
+        from .combo_packages import tag_card as _tag_card_for_fit
+        from .config import settings as _settings
+
+        def _theme_fit(brew_result: dict[str, Any]) -> tuple[float, dict[str, int]]:
+            """Count package-tagged cards in the deck against target packages."""
+            if not target_packages:
+                return 0.0, {}
+            main_deck = (
+                brew_result.get("deck_summary", {}).get("main_deck", [])
+                or brew_result.get("analysis", {}).get("copy_counts", {}).get("main_deck", {})
+            )
+            if isinstance(main_deck, dict):
+                # copy_counts shape: {name: quantity}; we'd need card detail
+                # to tag, which we don't have. Skip in that case.
+                return 0.0, {}
+            per_pkg: dict[str, int] = {p: 0 for p in target_packages}
+            for entry_card in main_deck:
+                sc = entry_card.get("set_code")
+                num = entry_card.get("card_number")
+                qty = int(entry_card.get("quantity", 1) or 1)
+                if not (sc and num):
+                    continue
+                cache_path = (
+                    _settings.cache_dir
+                    / f"{sc.upper()}-{str(num).zfill(3)}.json"
+                )
+                if not cache_path.exists():
+                    continue
+                try:
+                    card_data = json.loads(cache_path.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                tags = _tag_card_for_fit(card_data)
+                hit_pkgs = (set(tags["enables"]) | set(tags["pays_off"])) & target_packages
+                for p in hit_pkgs:
+                    per_pkg[p] += qty
+            total_hits = sum(per_pkg.values())
+            bonus = min(total_hits * THEME_FIT_PER_MATCH, THEME_FIT_CAP)
+            return bonus, per_pkg
+
         results: list[dict[str, Any]] = []
         for first, second, shared in pairs:
             pair_names = [str(first["display_name"]), str(second["display_name"])]
@@ -1451,7 +1537,13 @@ class DeckService:
                     "total_extra_resource_burden", 0
                 )
             )
-            score = synergy + (interaction / 5.0) - (2.0 * burden)
+            theme_bonus, package_hits = _theme_fit(brew)
+            score = (
+                synergy
+                + (interaction / 5.0)
+                - (2.0 * burden)
+                + theme_bonus
+            )
             entry: dict[str, Any] = {
                 "leaders": pair_names,
                 "shared_moral": shared,
@@ -1460,6 +1552,8 @@ class DeckService:
                 "synergy_score": synergy,
                 "interaction_density": interaction,
                 "burden": burden,
+                "theme_fit_bonus": round(theme_bonus, 2),
+                "package_hits": package_hits,
                 "avg_cost": analysis.get("average_cost"),
                 "deck_size": analysis.get("deck_size"),
                 "trait_breakdown": analysis.get("trait_breakdown"),
@@ -1477,9 +1571,12 @@ class DeckService:
             "moral_filter": moral,
             "leader_pool_size": len(leaders),
             "pairs_considered": len(pairs),
+            "target_packages": sorted(target_packages) or None,
             "ranked": results[:top_k],
             "scoring": (
-                "score = synergy_score + interaction_density/5 - 2 × off_aspect_burden"
+                "score = synergy_score + interaction_density/5 "
+                "- 2 × off_aspect_burden + theme_fit_bonus "
+                "(0.5 per package-tagged card, capped at 25)"
             ),
         }
 
