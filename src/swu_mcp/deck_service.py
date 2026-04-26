@@ -2417,26 +2417,57 @@ class DeckService:
         if base_name:
             return self.card_service.lookup_card(name=base_name)
 
-        query = " ".join(sorted(aspect_pool))
-        result = self.card_service.search_cards(query=query or "*", filters={"type": "Base"}, limit=25)
-        if not result["cards"]:
-            result = self.card_service.search_cards(query="*", filters={"type": "Base"}, limit=25)
+        # Score each candidate base by aspect-pool *expansion* — the most
+        # valuable base is one whose aspect isn't already covered by the
+        # leaders. Without this preference the picker would happily pair
+        # a Cunning leader with a Cunning base, wasting the slot.
+        def _score_base(base_card: dict[str, Any]) -> tuple[int, int]:
+            asps = set(base_card.get("aspects") or [])
+            new_aspects = len(asps - aspect_pool)
+            try:
+                hp = int(base_card.get("hp") or 0)
+            except (TypeError, ValueError):
+                hp = 0
+            # Higher new-aspect count first, then higher HP as tiebreak.
+            return (new_aspects, hp)
 
+        # When only_owned, walk the collection's owned bases directly so
+        # we don't lose candidates to API search caps.
         if only_owned and self.collection_service is not None:
-            for candidate in result["cards"]:
-                if self.collection_service.is_owned(str(candidate["set_code"]), str(candidate["number"])):
-                    looked_up = self._safe_lookup(candidate)
-                    if looked_up is not None:
-                        return looked_up
+            self.collection_service._load_from_disk()
+            owned_bases: list[dict[str, Any]] = []
+            for entry in self.collection_service._entries.values():
+                try:
+                    detail = self.card_service.lookup_card(
+                        set_code=entry.set_code, card_number=entry.card_number,
+                    )
+                except Exception:
+                    continue
+                if detail.get("card_type") == "Base":
+                    owned_bases.append(detail)
+            if owned_bases:
+                owned_bases.sort(key=_score_base, reverse=True)
+                return owned_bases[0]
 
-        for candidate in result["cards"]:
-            looked_up = self._safe_lookup(candidate)
-            if looked_up is not None:
-                return looked_up
-
-        return self.card_service.lookup_card(
-            set_code=result["cards"][0]["set_code"], card_number=result["cards"][0]["number"]
+        # Fallback: API search. Still prefer aspect expansion in scoring.
+        result = self.card_service.search_cards(
+            query="*", filters={"type": "Base"}, limit=50
         )
+        looked_up_pool: list[dict[str, Any]] = []
+        for candidate in result.get("cards", []):
+            looked_up = self._safe_lookup(candidate)
+            if looked_up is not None and looked_up.get("card_type") == "Base":
+                looked_up_pool.append(looked_up)
+        if not looked_up_pool:
+            # Last-ditch: return the raw first hit if any
+            if result.get("cards"):
+                first = result["cards"][0]
+                return self.card_service.lookup_card(
+                    set_code=first["set_code"], card_number=first["number"],
+                )
+            raise RuntimeError("No bases available to pick from.")
+        looked_up_pool.sort(key=_score_base, reverse=True)
+        return looked_up_pool[0]
 
     def _parse_deck_dict(self, payload: dict[str, Any], format_name: str) -> ParsedDeck:
         parsed = ParsedDeck(format_name=format_name, title=payload.get("title"))
