@@ -1472,28 +1472,50 @@ class DeckService:
         from .combo_packages import tag_card as _tag_card_for_fit
         from .config import settings as _settings
 
+        # Parse "<qty> <SET>/<NUM>" lines out of the holoscan main-deck section.
+        _HOLOSCAN_LINE = re.compile(
+            r"^\s*(\d+)\s+([A-Z][A-Z0-9]+)\s*/\s*(\d+)\s*$"
+        )
+
+        def _main_deck_from_holoscan(holoscan: str) -> list[tuple[str, str, int]]:
+            entries: list[tuple[str, str, int]] = []
+            in_main = False
+            for raw in (holoscan or "").splitlines():
+                stripped = raw.strip()
+                if not stripped:
+                    continue
+                if stripped.lower().startswith("main deck"):
+                    in_main = True
+                    continue
+                if stripped.lower().startswith(("leaders", "base", "sideboard")):
+                    in_main = False
+                    continue
+                if not in_main:
+                    continue
+                match = _HOLOSCAN_LINE.match(stripped)
+                if match:
+                    qty, set_code, number = match.groups()
+                    entries.append((set_code, number, int(qty)))
+            return entries
+
         def _theme_fit(brew_result: dict[str, Any]) -> tuple[float, dict[str, int]]:
-            """Count package-tagged cards in the deck against target packages."""
+            """Count package-tagged cards in the deck against target packages.
+
+            generate_deck doesn't include a structured deck_summary, so we
+            parse the holoscan string back into (set, number, qty) tuples
+            and look each card up from the cache to tag it.
+            """
             if not target_packages:
                 return 0.0, {}
-            main_deck = (
-                brew_result.get("deck_summary", {}).get("main_deck", [])
-                or brew_result.get("analysis", {}).get("copy_counts", {}).get("main_deck", {})
-            )
-            if isinstance(main_deck, dict):
-                # copy_counts shape: {name: quantity}; we'd need card detail
-                # to tag, which we don't have. Skip in that case.
+            holoscan = brew_result.get("deck_holoscan", "")
+            entries = _main_deck_from_holoscan(holoscan)
+            if not entries:
                 return 0.0, {}
             per_pkg: dict[str, int] = {p: 0 for p in target_packages}
-            for entry_card in main_deck:
-                sc = entry_card.get("set_code")
-                num = entry_card.get("card_number")
-                qty = int(entry_card.get("quantity", 1) or 1)
-                if not (sc and num):
-                    continue
+            for set_code, number, qty in entries:
                 cache_path = (
                     _settings.cache_dir
-                    / f"{sc.upper()}-{str(num).zfill(3)}.json"
+                    / f"{set_code.upper()}-{str(number).zfill(3)}.json"
                 )
                 if not cache_path.exists():
                     continue
