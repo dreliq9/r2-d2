@@ -150,6 +150,51 @@ THEME_TO_PACKAGES: dict[str, set[str]] = {
 THEME_FIT_PER_MATCH = 0.5
 THEME_FIT_CAP = 25.0
 
+# Leader-level roles per combo package. The leader-pair ranker uses these to
+# detect "closed loops" — pairs where one leader generates the resource and
+# the other consumes/pays-off on it. Closed loops score higher than two
+# leaders that happen to touch the same package independently.
+LEADER_PACKAGE_ROLES: dict[str, dict[str, list[str]]] = {
+    "force_engine": {
+        "generator": [r"create your Force token", r"create a Force token"],
+        "consumer":  [r"use the Force"],
+        "payoff":    [r"Force unit", r"Jedi unit", r"if you used the Force"],
+    },
+    "exhaust_engine": {
+        # "Action [Exhaust]:" pays for the leader's own action with its own
+        # exhaust — that doesn't generate exhaust state on a target. Look for
+        # effects that exhaust *another* unit.
+        "generator": [
+            r"exhaust an enemy",
+            r"exhaust a non-leader unit",
+            r"exhaust a unit\b",
+            r"exhaust each",
+        ],
+        "consumer":  [r"\bready a ", r"\bready an ", r"\bready that "],
+        "payoff":    [r"if you control an exhausted", r"another exhausted"],
+    },
+    "token_swarm": {
+        "generator": [r"create (a|an|\d+) [\w\- ]*?token"],
+        "consumer":  [],
+        # "if you control 6 or more" without a noun matches epic-deploy text
+        # ("6 or more resources"). Require a unit/friendly object.
+        "payoff":    [r"for each friendly", r"for each unit", r"if you control \d+ or more (?:friendly )?units"],
+    },
+    "indirect_damage": {
+        "generator": [r"deal \d+ indirect"],
+        "consumer":  [],
+        "payoff":    [r"indirect damage you deal", r"when indirect damage is dealt"],
+    },
+    "when_defeated": {
+        "generator": [r"defeat (a|an|target|each|all|up to)( [\w'-]+){0,3} unit"],
+        "consumer":  [],
+        "payoff":    [r"When Defeated"],
+    },
+}
+LEADER_LOOP_CLOSED_BONUS = 5.0    # generator + consumer present on the pair
+LEADER_LOOP_PAYOFF_BONUS = 3.0    # generator + payoff present on the pair
+LEADER_LOOP_TOUCH_BONUS  = 1.0    # at least one leader touches the package
+
 PREMIER = "premier"
 TWIN_SUNS = "twin_suns"
 SUPPORTED_FORMATS = {PREMIER, TWIN_SUNS}
@@ -1468,6 +1513,48 @@ class DeckService:
             if keyword in theme_lower:
                 target_packages |= pkgs
 
+        def _leader_text(leader: dict[str, Any]) -> str:
+            return " ".join(
+                str(leader.get(k) or "") for k in
+                ("front_text", "back_text", "epic_action")
+            )
+
+        def _leader_roles(leader: dict[str, Any]) -> dict[str, set[str]]:
+            text = _leader_text(leader)
+            roles_per_pkg: dict[str, set[str]] = {}
+            for pkg, role_map in LEADER_PACKAGE_ROLES.items():
+                roles: set[str] = set()
+                for role_name, patterns in role_map.items():
+                    for pat in patterns:
+                        if re.search(pat, text, re.IGNORECASE):
+                            roles.add(role_name)
+                            break
+                if roles:
+                    roles_per_pkg[pkg] = roles
+            return roles_per_pkg
+
+        def _loop_bonus(first: dict, second: dict) -> tuple[float, dict[str, list[str]]]:
+            if not target_packages:
+                return 0.0, {}
+            a_roles = _leader_roles(first)
+            b_roles = _leader_roles(second)
+            bonus = 0.0
+            detail: dict[str, list[str]] = {}
+            for pkg in target_packages:
+                combined = a_roles.get(pkg, set()) | b_roles.get(pkg, set())
+                if not combined:
+                    continue
+                if {"generator", "consumer"} <= combined:
+                    bonus += LEADER_LOOP_CLOSED_BONUS
+                    detail[pkg] = sorted(combined) + ["[closed-loop]"]
+                elif {"generator", "payoff"} <= combined:
+                    bonus += LEADER_LOOP_PAYOFF_BONUS
+                    detail[pkg] = sorted(combined) + ["[gen+payoff]"]
+                else:
+                    bonus += LEADER_LOOP_TOUCH_BONUS
+                    detail[pkg] = sorted(combined) + ["[touched]"]
+            return bonus, detail
+
         # Brew + score each pair. Failures are logged but don't kill the run.
         from .combo_packages import tag_card as _tag_card_for_fit
         from .config import settings as _settings
@@ -1560,11 +1647,13 @@ class DeckService:
                 )
             )
             theme_bonus, package_hits = _theme_fit(brew)
+            loop_bonus_val, loop_detail = _loop_bonus(first, second)
             score = (
                 synergy
                 + (interaction / 5.0)
                 - (2.0 * burden)
                 + theme_bonus
+                + loop_bonus_val
             )
             entry: dict[str, Any] = {
                 "leaders": pair_names,
@@ -1576,6 +1665,8 @@ class DeckService:
                 "burden": burden,
                 "theme_fit_bonus": round(theme_bonus, 2),
                 "package_hits": package_hits,
+                "leader_loop_bonus": round(loop_bonus_val, 2),
+                "leader_loop_detail": loop_detail,
                 "avg_cost": analysis.get("average_cost"),
                 "deck_size": analysis.get("deck_size"),
                 "trait_breakdown": analysis.get("trait_breakdown"),
@@ -1598,7 +1689,9 @@ class DeckService:
             "scoring": (
                 "score = synergy_score + interaction_density/5 "
                 "- 2 × off_aspect_burden + theme_fit_bonus "
-                "(0.5 per package-tagged card, capped at 25)"
+                "(0.5 per package-tagged card, capped at 25) "
+                "+ leader_loop_bonus (+5 closed loop, +3 gen+payoff, "
+                "+1 single touch — per target package)"
             ),
         }
 
