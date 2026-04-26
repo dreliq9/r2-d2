@@ -146,6 +146,11 @@ THEME_TO_PACKAGES: dict[str, set[str]] = {
     "tap":         {"exhaust_engine"},
     "mandalorian": {"mandalorian"},
     "mando":       {"mandalorian"},
+    "bounce":      {"replay_engine"},
+    "replay":      {"replay_engine"},
+    "re-trigger":  {"replay_engine"},
+    "retrigger":   {"replay_engine"},
+    "when played": {"replay_engine"},
 }
 THEME_FIT_PER_MATCH = 0.5
 THEME_FIT_CAP = 25.0
@@ -189,6 +194,24 @@ LEADER_PACKAGE_ROLES: dict[str, dict[str, list[str]]] = {
         "generator": [r"defeat (a|an|target|each|all|up to)( [\w'-]+){0,3} unit"],
         "consumer":  [],
         "payoff":    [r"When Defeated"],
+    },
+    # Implicit synergy: bounce/replay enablers don't mention "When Played"
+    # but every When Played card becomes a replay-payoff target. Qui-Gon
+    # Jinn's "Return a friendly non-leader unit" is the canonical leader
+    # enabler. The payoff side (When Played) is handled at the deck level
+    # via the combo package's matchers, not at the leader-action level —
+    # most leaders don't have When Played effects since they enter via
+    # epic deploys.
+    "replay_engine": {
+        "generator": [
+            r"return a (friendly )?(non-leader )?unit",
+            r"return [\w'\- ]+ to its owner",
+            r"return [\w'\- ]+ to your hand",
+            r"play a (unit|card) from your (hand|discard)",
+            r"play [\w'\- ]+ for free",
+        ],
+        "consumer":  [],
+        "payoff":    [r"When Played:"],
     },
 }
 LEADER_LOOP_CLOSED_BONUS = 5.0    # generator + consumer present on the pair

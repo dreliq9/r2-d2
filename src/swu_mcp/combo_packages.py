@@ -186,6 +186,39 @@ def _mando_payoff(c: dict) -> bool:
     return "MANDALORIAN" in _text(c).upper()
 
 
+# === Replay engine (bounce + When Played re-triggers) ==============
+# Implicit synergy that no card calls out by name: cards which return a unit
+# to hand / play from discard / let you replay something pair with the rich
+# pool of "When Played:" triggers. Qui-Gon's leader ability ("Return a
+# friendly non-leader unit to its owner's hand") is the canonical example —
+# his text doesn't mention When Played, but every When Played card in the
+# deck becomes a re-trigger target.
+def _replay_enabler(c: dict) -> bool:
+    txt = _text(c)
+    if not txt:
+        return False
+    patterns = [
+        r"return a (friendly )?(non-leader )?unit (to|to its)",
+        r"return [\w'\-]+ to its owner",
+        r"return [\w'\-]+ to your hand",
+        r"play a (unit|card) from your (hand|discard)",
+        r"play [\w'\- ]+ for free",
+        r"put [\w'\- ]+ from your discard pile into play",
+    ]
+    return any(re.search(p, txt, re.IGNORECASE) for p in patterns)
+
+
+def _replay_payoff(c: dict) -> bool:
+    txt = _text(c)
+    # "When Played" is the canonical replay-payoff trigger. We also accept
+    # On Attack effects since some bounce/replay enablers also let you attack
+    # with the replayed unit. Skip leaders so we don't double-count their
+    # Action [Exhaust] abilities as payoffs.
+    if c.get("Type") == "Leader" or c.get("card_type") == "Leader":
+        return False
+    return "When Played:" in txt
+
+
 # === Exhaust / Ready engine =========================================
 # Cards that exhaust units (yours or opponent's) drive an "exhaust pool" that
 # other cards consume by readying or by triggering off exhausted targets.
@@ -258,6 +291,9 @@ PACKAGES: list[ComboPackage] = [
     ComboPackage("exhaust_engine",
                  "Exhaust units + ready/exhaust payoffs (Ackbar/C-3PO chain)",
                  _exhaust_enabler, _exhaust_payoff),
+    ComboPackage("replay_engine",
+                 "Bounce/replay enablers + When Played re-triggers (Qui-Gon Jinn)",
+                 _replay_enabler, _replay_payoff),
 ]
 
 
