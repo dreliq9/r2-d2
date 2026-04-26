@@ -151,6 +151,16 @@ THEME_TO_PACKAGES: dict[str, set[str]] = {
     "re-trigger":  {"replay_engine"},
     "retrigger":   {"replay_engine"},
     "when played": {"replay_engine"},
+    "grit":        {"self_damage_engine"},
+    "self-damage": {"self_damage_engine"},
+    "self damage": {"self_damage_engine"},
+    "on attack":   {"attack_engine"},
+    "attack-engine":{"attack_engine"},
+    "free attack": {"attack_engine"},
+    "discard":     {"discard_engine"},
+    "graveyard":   {"discard_engine"},
+    "recursion":   {"discard_engine"},
+    "from discard":{"discard_engine"},
 }
 THEME_FIT_PER_MATCH = 0.5
 THEME_FIT_CAP = 25.0
@@ -212,6 +222,43 @@ LEADER_PACKAGE_ROLES: dict[str, dict[str, list[str]]] = {
         ],
         "consumer":  [],
         "payoff":    [r"When Played:"],
+    },
+    # Self-damage enablers (Asajj Ventress action, etc.) fuel Grit + damage
+    # payoffs. Most leaders don't have Grit text directly, so payoff side
+    # at the leader level is rare.
+    "self_damage_engine": {
+        "generator": [
+            r"deal \d+ damage to a friendly",
+            r"deal \d+ damage to a unit you control",
+        ],
+        "consumer":  [],
+        "payoff":    [r"\bGrit\b", r"for each damage", r"while damaged"],
+    },
+    # Free-attack effects pair with any On Attack: triggered text. Avar
+    # Kriss doesn't grant attacks but other Force leaders enable repeat
+    # attacks via "use the Force" effects on units.
+    "attack_engine": {
+        "generator": [
+            r"attack with a (friendly )?[\w\- ]*unit",
+            r"may attack with",
+            r"even if (it'?s? )?exhausted",
+        ],
+        "consumer":  [],
+        "payoff":    [r"On Attack:"],
+    },
+    # Discard sources + graveyard recursion. Kylo Ren leader is the main
+    # Heroism/Villainy generator. Payoffs trigger off cards in discard.
+    "discard_engine": {
+        "generator": [
+            r"discard \d+ card",
+            r"discard a card",
+            r"discard your hand",
+        ],
+        "consumer":  [],
+        "payoff":    [
+            r"from your discard pile",
+            r"from the discard pile",
+        ],
     },
 }
 LEADER_LOOP_CLOSED_BONUS = 5.0    # generator + consumer present on the pair

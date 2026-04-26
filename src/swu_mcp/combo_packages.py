@@ -186,6 +186,82 @@ def _mando_payoff(c: dict) -> bool:
     return "MANDALORIAN" in _text(c).upper()
 
 
+# === Self-damage / Grit engine =====================================
+# Damaging your own units fuels Grit (+1/+0 per damage on it) and other
+# damage-payoff effects. Asajj Ventress, certain events, Witch of the Mist
+# all hurt your own board on purpose. Neither side names the other —
+# Asajj's text doesn't mention Grit.
+def _self_damage_enabler(c: dict) -> bool:
+    txt = _text(c).lower()
+    if not txt:
+        return False
+    return bool(
+        re.search(r"deal \d+ damage to a friendly", txt)
+        or re.search(r"deal \d+ damage to a unit you control", txt)
+        or re.search(r"deal damage to a friendly", txt)
+    )
+
+
+def _self_damage_payoff(c: dict) -> bool:
+    if "Grit" in (c.get("Keywords") or c.get("keywords") or []):
+        return True
+    txt = _text(c).lower()
+    return bool(
+        "for each damage" in txt
+        or "while this unit is damaged" in txt
+        or "while damaged" in txt
+        or "if this unit has damage" in txt
+    )
+
+
+# === Attack-trigger engine =========================================
+# Cards that grant a "free attack" enable any On-Attack trigger card to
+# trigger off-rhythm. Maz Kanata's "When Played: attack with a Force unit
+# for free" is the canonical enabler; Niman Strike attacks with an
+# exhausted Force unit. Payoff: any "On Attack:" custom trigger text.
+def _attack_enabler(c: dict) -> bool:
+    txt = _text(c)
+    if not txt:
+        return False
+    if "Ambush" in (c.get("Keywords") or c.get("keywords") or []):
+        return True
+    return bool(
+        re.search(r"\battack with a (friendly )?[\w\- ]*unit", txt, re.IGNORECASE)
+        or re.search(r"\bmay attack with", txt, re.IGNORECASE)
+        or re.search(r"attack with [\w'\- ]+ even if (it'?s? )?exhausted",
+                     txt, re.IGNORECASE)
+    )
+
+
+def _attack_payoff(c: dict) -> bool:
+    return "On Attack:" in _text(c)
+
+
+# === Discard / graveyard engine ====================================
+# Cards that discard (yours or opponent's) feed graveyard-recursion and
+# discard-payoff effects. Kylo Ren leader discards from hand; Profundity
+# discards opponent's hand. Salvage, Luminous Beings, Flight of the
+# Inquisitor return cards from the discard pile.
+def _discard_enabler(c: dict) -> bool:
+    txt = _text(c).lower()
+    if not txt:
+        return False
+    return bool(
+        re.search(r"\bdiscard \d+ card", txt)
+        or re.search(r"\bdiscard a card", txt)
+        or "discard your hand" in txt
+        or "discard the top" in txt
+    )
+
+
+def _discard_payoff(c: dict) -> bool:
+    txt = _text(c).lower()
+    return bool(
+        "from your discard pile" in txt
+        or "from the discard pile" in txt
+    )
+
+
 # === Replay engine (bounce + When Played re-triggers) ==============
 # Implicit synergy that no card calls out by name: cards which return a unit
 # to hand / play from discard / let you replay something pair with the rich
@@ -294,6 +370,15 @@ PACKAGES: list[ComboPackage] = [
     ComboPackage("replay_engine",
                  "Bounce/replay enablers + When Played re-triggers (Qui-Gon Jinn)",
                  _replay_enabler, _replay_payoff),
+    ComboPackage("self_damage_engine",
+                 "Damage your own units to fuel Grit/damage-payoff effects",
+                 _self_damage_enabler, _self_damage_payoff),
+    ComboPackage("attack_engine",
+                 "Free-attack effects + On-Attack triggered abilities",
+                 _attack_enabler, _attack_payoff),
+    ComboPackage("discard_engine",
+                 "Discard sources + discard-pile recursion",
+                 _discard_enabler, _discard_payoff),
 ]
 
 
