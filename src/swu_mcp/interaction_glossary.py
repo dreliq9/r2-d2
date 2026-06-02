@@ -14,6 +14,8 @@ Use:
 import re
 from typing import Iterable
 
+from .combo_packages import _replay_enabler, _replay_payoff
+
 # ---- Provides vocabulary (machine-readable from card data fields) ----
 
 TRAITS_ALL = [
@@ -119,6 +121,13 @@ def provides_set(card: dict) -> set[str]:
         out.add(f"aspect:{a}")
     for ar in (card.get("arenas") or card.get("Arenas") or []):
         out.add(f"arena:{ar}")
+    # Mechanical effect tokens. Tribes/aspects alone can't see a bounce/replay
+    # loop, so a bounce-or-recast card "provides" the ability to re-fire a
+    # When-Played trigger. Paired with the matching need on payoff cards (see
+    # needs_set), this lets interaction_term value bounce enablers as bounce
+    # pieces instead of as random members of whatever trait they happen to be.
+    if _replay_enabler(card):
+        out.add("effect:replay")
     return out
 
 
@@ -167,6 +176,13 @@ def needs_set(card: dict, *, score_aspects: bool = True) -> set[str]:
                 continue
             if re.search(r"\b" + re.escape(asp) + r"\b", text):
                 out.add(f"aspect:{asp}")
+
+    # A card with a When-Played trigger is a replay payoff: it "needs" a
+    # bounce/recast enabler (effect:replay, emitted by provides_set) so the
+    # interaction model rewards pairing the two. Mirrors the replay_engine
+    # combo package, but at the per-pair interaction layer where it can rank.
+    if _replay_payoff(card):
+        out.add("effect:replay")
 
     return out
 
