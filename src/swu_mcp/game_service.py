@@ -1860,7 +1860,13 @@ class GameService:
 
         play_actions = [action for action in actions if action["action"] == "play"]
         if play_actions:
-            return min(play_actions, key=lambda action: (action["cost"], 0 if action["card_type"] == "Unit" else 1))
+            # Develop the strongest affordable threat: prefer Units, then the
+            # highest-cost (biggest body) affordable — instead of always dumping
+            # the cheapest card and leaving bombs stranded in hand.
+            return max(
+                play_actions,
+                key=lambda action: (1 if action["card_type"] == "Unit" else 0, action["cost"]),
+            )
 
         leader_actions = [action for action in actions if action["action"] == "deploy_leader"]
         if leader_actions:
@@ -1882,18 +1888,48 @@ class GameService:
         return (off_aspect, parse_int(raw_card.get("cost")) or 0)
 
     def _attack_priority(self, game: GameSession, player_id: str, action: dict[str, Any]) -> tuple[int, int]:
+        """Trade-aware attack scoring. Tiers (high to low):
+            10 lethal on base   8 favorable trade (kill, survive)
+            5  even/up mutual    3 chip the base   2 trade down   1 chip a unit
+        Replaces the old "base always beats units" rule that made every AI a
+        mindless face-racer.
+        """
+        session = self._deck_session_for(game, player_id)
         defender_session = self._deck_session_for(game, self._other_player_id(player_id))
         target_zone = action["target_zone"]
         target_name = action["target_name"]
+
+        # Attacker stats
+        a_pow, a_hp = 0, 1
+        try:
+            attacker = self.deck_service._find_game_card(
+                session, card_name=action["card_name"], zone=action["source_zone"]
+            )
+            a_raw = session.card_index[attacker.lookup_id]
+            a_pow = self._effective_power(attacker, a_raw)
+            a_hp = self._effective_hp(attacker, a_raw) - attacker.damage
+        except Exception:
+            pass
+
         if target_zone == "base":
             base = self._base_state(defender_session, target_name)
             raw = defender_session.card_index[base.lookup_id]
             remaining_hp = self._effective_hp(base, raw) - base.damage
-            return (3, -remaining_hp)
+            if a_pow >= remaining_hp:
+                return (10, a_pow)  # lethal — take it
+            return (3, a_pow)       # chip the base (default aggression)
+
         defender = self.deck_service._find_game_card(defender_session, card_name=target_name, zone=target_zone)
         raw = defender_session.card_index[defender.lookup_id]
-        remaining_hp = self._effective_hp(defender, raw) - defender.damage
-        return (2, -remaining_hp)
+        d_pow = self._effective_power(defender, raw)
+        d_hp = self._effective_hp(defender, raw) - defender.damage
+        kills = a_pow >= d_hp
+        survives = d_pow < a_hp
+        if kills and survives:
+            return (8, d_pow)                       # remove a threat, keep attacker
+        if kills and not survives:
+            return (5 if d_pow >= a_pow else 2, d_pow)  # mutual: good if trading up/even
+        return (1, d_pow)                           # can't kill it — low value chip
 
     def _effect_target_action_priority(self, game: GameSession, player_id: str, action: dict[str, Any]) -> tuple[int, int]:
         target_zone = action.get("target_zone")
