@@ -589,6 +589,7 @@ class GameService:
         cards_defeated: dict[str, list[str]] = {"player": [], "opponent": []}
         turn_log: list[dict[str, Any]] = []
         safety_counter = 0
+        stuck = 0
         max_actions_total = max_turns * 30  # hard ceiling
 
         while not game.winner and game.turn_number <= max_turns * 2:
@@ -619,6 +620,25 @@ class GameService:
                     )
                 except Exception:
                     break
+
+            # No-progress safety valve: if the loop spins without the log growing,
+            # a triggered effect or combat is wedged on the stack (the AI can't
+            # find a way to resolve it). Clear the stack and, if still stuck,
+            # force a pass — so the game resolves to a real result instead of
+            # spinning out to a draw.
+            if len(game.log) == log_before:
+                stuck += 1
+                if stuck == 6:
+                    game.pending_effects.clear()
+                    game.pending_combat = None
+                    game.priority_player_id = game.active_player_id
+                elif stuck >= 12:
+                    try:
+                        self._end_turn(game, game.active_player_id)
+                    except Exception:
+                        break
+            else:
+                stuck = 0
 
             # Scan new log entries for stats
             new_entries = game.log[log_before:]
@@ -1860,13 +1880,7 @@ class GameService:
 
         play_actions = [action for action in actions if action["action"] == "play"]
         if play_actions:
-            # Develop the strongest affordable threat: prefer Units, then the
-            # highest-cost (biggest body) affordable — instead of always dumping
-            # the cheapest card and leaving bombs stranded in hand.
-            return max(
-                play_actions,
-                key=lambda action: (1 if action["card_type"] == "Unit" else 0, action["cost"]),
-            )
+            return min(play_actions, key=lambda action: (action["cost"], 0 if action["card_type"] == "Unit" else 1))
 
         leader_actions = [action for action in actions if action["action"] == "deploy_leader"]
         if leader_actions:
@@ -1917,19 +1931,26 @@ class GameService:
             remaining_hp = self._effective_hp(base, raw) - base.damage
             if a_pow >= remaining_hp:
                 return (10, a_pow)  # lethal — take it
-            return (3, a_pow)       # chip the base (default aggression)
+            return (6, a_pow)       # pressure the base (aggression is the default win-con)
 
-        defender = self.deck_service._find_game_card(defender_session, card_name=target_name, zone=target_zone)
-        raw = defender_session.card_index[defender.lookup_id]
-        d_pow = self._effective_power(defender, raw)
-        d_hp = self._effective_hp(defender, raw) - defender.damage
+        try:
+            defender = self.deck_service._find_game_card(defender_session, card_name=target_name, zone=target_zone)
+            raw = defender_session.card_index[defender.lookup_id]
+            d_pow = self._effective_power(defender, raw)
+            d_hp = self._effective_hp(defender, raw) - defender.damage
+        except Exception:
+            return (1, 0)  # can't evaluate target — lowest priority, never wedge the AI
         kills = a_pow >= d_hp
         survives = d_pow < a_hp
+        # Only trade off attackers to remove a *real* threat (power >= 3); small
+        # bodies aren't worth diverting from base pressure, or heal-heavy decks
+        # out-sustain the chip and the game stalls.
+        threat = d_pow >= 3
         if kills and survives:
-            return (8, d_pow)                       # remove a threat, keep attacker
+            return (8, d_pow) if threat else (4, d_pow)   # clear big threat > base > clear small
         if kills and not survives:
-            return (5 if d_pow >= a_pow else 2, d_pow)  # mutual: good if trading up/even
-        return (1, d_pow)                           # can't kill it — low value chip
+            return (7, d_pow) if d_pow > a_pow else (2, d_pow)  # trade up into a bigger body only
+        return (1, d_pow)                                  # can't kill it — low value
 
     def _effect_target_action_priority(self, game: GameSession, player_id: str, action: dict[str, Any]) -> tuple[int, int]:
         target_zone = action.get("target_zone")
