@@ -315,6 +315,33 @@ def _replay_payoff(c: dict) -> bool:
     return "When Played:" in txt
 
 
+def replay_quality(c: dict) -> float:
+    """Grade a bounce/replay ENABLER by engine strength (0.0 if not one).
+
+    The flat combo bonus and the binary interaction token both treat every
+    replay enabler identically. This grades them so the brewer can rank a free
+    recast above a vanilla bounce:
+
+        3.0  free recast   — bounce AND replay at no cost (Rio Durant)
+        2.0  open bounce    — return a friendly unit, no cost ceiling
+        1.5  capped bounce  — "return a unit that costs N or less"
+        1.0  discard recur  — replay from the discard pile (slower)
+
+    Checked in priority order: "for free" wins even when the card also names a
+    cost ceiling (Rio is both).
+    """
+    if not _replay_enabler(c):
+        return 0.0
+    t = _text(c).lower()
+    if "for free" in t:
+        return 3.0
+    if "discard pile" in t:
+        return 1.0
+    if re.search(r"costs \d+ or less", t):
+        return 1.5
+    return 2.0
+
+
 # === Exhaust / Ready engine =========================================
 # Cards that exhaust units (yours or opponent's) drive an "exhaust pool" that
 # other cards consume by readying or by triggering off exhausted targets.

@@ -21,6 +21,11 @@ INTERACTION_PAYOFF_W = 8.0
 INTERACTION_ENABLER_W = 8.0
 INTERACTION_TRAIT_W = 0.5
 INTERACTION_CAP_PER_PAIR = 1
+# Per-card bonus that grades replay-engine ENABLERS by quality (free recast >
+# open bounce > capped bounce > discard recur). Folded into base_scores so it
+# ranks bounce pieces against each other — something the flat combo bonus and
+# the binary (capped-at-1) interaction token cannot do.
+REPLAY_QUALITY_W = 2.0
 
 POWER_WEIGHT = 1.0
 BLANK_TEXT_PENALTY = -4.0
@@ -1168,6 +1173,8 @@ class DeckService:
         }
         type_counts: Counter[str] = Counter()
 
+        from .combo_packages import replay_quality
+
         base_scores: dict[int, float] = {}
         for candidate in pool:
             base_scores[id(candidate)] = generation_score(
@@ -1177,7 +1184,7 @@ class DeckService:
                 budget=budget,
                 meta_summary=meta_summary,
                 format_name=normalized_format,
-            )
+            ) + REPLAY_QUALITY_W * replay_quality(candidate)
 
         # Cache provides/needs/traits sets for every card we may score against.
         interaction_cache: dict[int, tuple[set[str], set[str], set[str]]] = {}
