@@ -68,6 +68,11 @@ class GameSession:
     pending_effects: list[PendingEffect] = field(default_factory=list)
     stack_passes: int = 0
     pending_combat: PendingCombat | None = None
+    # Action-phase alternation: players take one action at a time; two
+    # consecutive passes end the phase and trigger regroup (new round).
+    round_number: int = 1
+    consecutive_passes: int = 0
+    first_passer_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -401,6 +406,12 @@ class GameService:
         else:
             raise ValueError(f"Unsupported action: {action}")
 
+        # Any board action (not a pass) breaks a pass streak: the action phase
+        # only ends when BOTH players pass in succession.
+        if normalized_action in {"resource", "play", "deploy_leader", "attack"}:
+            game.consecutive_passes = 0
+            game.first_passer_id = None
+
         return {
             "game_id": game_id,
             "action": normalized_action,
@@ -497,6 +508,9 @@ class GameService:
             raise ValueError(f"{player_id} is not configured as an AI player.")
 
         executed: list[dict[str, Any]] = []
+        board_actions = {"play", "attack", "deploy_leader", "resource"}
+        took_board_action = False
+        round_before = game.round_number
         for _ in range(max_actions):
             legal = self.get_legal_actions(game_id=game_id, player_id=player_id)
             if not legal.get("active", False):
@@ -504,10 +518,11 @@ class GameService:
             action = self._choose_ai_action(game, legal["actions"], player_id)
             if not action:
                 break
+            acted = action["action"]
             result = self.take_action(
                 game_id=game_id,
                 player_id=player_id,
-                action=action["action"],
+                action=acted,
                 card_name=action.get("card_name"),
                 target_name=action.get("target_name"),
                 source_zone=action.get("source_zone"),
@@ -517,14 +532,27 @@ class GameService:
             )
             executed.append(
                 {
-                    "action": action["action"],
+                    "action": acted,
                     "card_name": action.get("card_name"),
                     "target_name": action.get("target_name"),
                 }
             )
-            if game.winner:
+            if game.winner or game.round_number != round_before:
                 break
-            if not game.pending_effects and (action["action"] == "end_turn" or game.active_player_id != player_id):
+            if acted in board_actions:
+                took_board_action = True
+            # Resolve any triggered effect / combat from this action before
+            # handing over.
+            if game.pending_effects or game.pending_combat:
+                continue
+            if took_board_action:
+                # One action per priority window: pass to the opponent so the
+                # action phase truly alternates (the whole point of this model).
+                game.consecutive_passes = 0
+                game.active_player_id = self._other_player_id(player_id)
+                game.priority_player_id = game.active_player_id
+                break
+            if game.active_player_id != player_id:
                 break
 
         return {
@@ -946,21 +974,48 @@ class GameService:
         return self._resolve_pending_combat(game) or {"status": "attack_declared"}
 
     def _end_turn(self, game: GameSession, player_id: str) -> dict[str, Any]:
-        next_player = self._other_player_id(player_id)
-        game.active_player_id = next_player
-        game.priority_player_id = next_player
-        game.players[next_player].resources_played_this_turn = 0
+        """SWU has no 'end turn' — this is a PASS (declining to act). During the
+        action phase players alternate one action at a time; the phase ends only
+        when both pass in succession, which triggers the regroup phase.
+        """
+        if game.consecutive_passes == 0:
+            # First to pass takes the initiative next round.
+            game.first_passer_id = player_id
+        game.consecutive_passes += 1
+        game.log.append(f"{game.players[player_id].display_name} passed.")
+        if game.consecutive_passes >= 2:
+            return self._regroup(game)
+        other = self._other_player_id(player_id)
+        game.active_player_id = other
+        game.priority_player_id = other
+        return {"passed": player_id, "next_player": other}
+
+    def _regroup(self, game: GameSession) -> dict[str, Any]:
+        """Regroup phase: both players ready all cards and draw for the round.
+        The player who passed first takes the initiative for the new round.
+        (Resourcing remains a per-round action a player takes during their
+        window — capped at 1/round via resources_played_this_turn.)
+        """
+        initiative = game.first_passer_id or game.active_player_id
+        game.first_passer_id = None
+        game.consecutive_passes = 0
+        game.round_number += 1
         game.turn_number += 1
-        self.deck_service.regroup_phase(
-            session_id=game.players[next_player].deck_session_id,
+        for _pid, pstate in game.players.items():
+            pstate.resources_played_this_turn = 0
+            self.deck_service.regroup_phase(session_id=pstate.deck_session_id)
+            self.deck_service.resource_phase(
+                session_id=pstate.deck_session_id,
+                resource_card=None,
+                draw_for_turn=True,
+            )
+        game.active_player_id = initiative
+        game.priority_player_id = initiative
+        game.log.append(
+            f"Regroup — round {game.round_number}. "
+            f"{game.players[initiative].display_name} has initiative."
         )
-        self.deck_service.resource_phase(
-            session_id=game.players[next_player].deck_session_id,
-            resource_card=None,
-            draw_for_turn=True,
-        )
-        game.log.append(f"{game.players[player_id].display_name} ended their turn.")
-        return {"next_player": next_player}
+        return {"regroup": True, "round": game.round_number, "active": initiative}
 
     def _resolve_decklist(
         self,
