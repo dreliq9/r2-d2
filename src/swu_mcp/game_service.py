@@ -160,6 +160,7 @@ class GameService:
             log=[f"Game started. {player_name} vs {opponent_name}. {starter} takes the first turn."],
         )
         self.games[resolved_game_id] = game
+        self._seed_initial_resources(game)
         return {
             "game_id": resolved_game_id,
             "format": normalized_format,
@@ -708,6 +709,43 @@ class GameService:
             },
             "game_log": game.log,
         }
+
+    def _seed_initial_resources(self, game: GameSession, count: int = 2) -> None:
+        """SWU setup: each player puts `count` cards from hand into play as
+        resources, facedown and READY (subsequent rounds resource 1 in regroup).
+
+        Without this the sim started every player at 0 resources and ramped a
+        full ~2 behind the real game — nobody could play turn 1 and a 6-cost
+        leader slipped from round 5 to round 7, which badly skewed matchups
+        toward fast aggro. Resource the highest-cost cards so the opening hand
+        keeps its cheap, castable cards.
+        """
+        for player_id in game.players:
+            session = self._deck_session_for(game, player_id)
+
+            def _cost(lid: str) -> int:
+                card = session.card_index.get(lid, {})
+                try:
+                    return int(card.get("cost") or card.get("Cost") or 0)
+                except (TypeError, ValueError):
+                    return 0
+
+            for _ in range(count):
+                if not session.hand:
+                    break
+                lid = max(session.hand, key=_cost)
+                session.hand.remove(lid)
+                card = session.card_index[lid]
+                session.resources.append(
+                    GameCardState(
+                        instance_id=session.next_instance_id("resource"),
+                        lookup_id=lid,
+                        name=str(card["display_name"]),
+                        zone="resource",
+                        ready=True,
+                        deployed=True,
+                    )
+                )
 
     def _take_resource(self, game: GameSession, player_id: str, card_name: str) -> dict[str, Any]:
         player_state = game.players[player_id]
