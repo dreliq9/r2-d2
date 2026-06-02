@@ -2643,7 +2643,7 @@ def parse_deck_line(line: str, *, zone: str) -> DeckCardEntry:
         count = int(count_match.group("count"))
         remainder = count_match.group("rest").strip()
 
-    bracketed_id = re.match(r"^\[(?P<set>[A-Z]{2,4})/(?P<number>[0-9]{1,3}[A-Z]?)\]\s*(?P<name>.+)$", remainder)
+    bracketed_id = re.match(r"^\[(?P<set>[A-Z][A-Z0-9]{1,4})/(?P<number>[0-9]{1,3}[A-Z]?)\]\s*(?P<name>.+)$", remainder)
     if bracketed_id:
         return DeckCardEntry(
             quantity=count,
@@ -2657,7 +2657,7 @@ def parse_deck_line(line: str, *, zone: str) -> DeckCardEntry:
     # left empty — the resolver will populate it from the catalog using
     # set_code + card_number, which is the canonical lookup path. Numbers can
     # run to 4 digits (foil/hyperspace variants reach 4-digit numbering).
-    bare_id = re.match(r"^(?P<set>[A-Z]{2,4})/(?P<number>[0-9]{1,4}[A-Z]?)\s*$", remainder)
+    bare_id = re.match(r"^(?P<set>[A-Z][A-Z0-9]{1,4})/(?P<number>[0-9]{1,4}[A-Z]?)\s*$", remainder)
     if bare_id:
         return DeckCardEntry(
             quantity=count,
@@ -2667,7 +2667,7 @@ def parse_deck_line(line: str, *, zone: str) -> DeckCardEntry:
             card_number=bare_id.group("number"),
         )
 
-    prefixed_id = re.match(r"^(?P<set>[A-Z]{2,4})[ /](?P<number>[0-9]{1,3}[A-Z]?)\s+(?P<name>.+)$", remainder)
+    prefixed_id = re.match(r"^(?P<set>[A-Z][A-Z0-9]{1,4})[ /](?P<number>[0-9]{1,3}[A-Z]?)\s+(?P<name>.+)$", remainder)
     if prefixed_id:
         return DeckCardEntry(
             quantity=count,
@@ -2677,7 +2677,7 @@ def parse_deck_line(line: str, *, zone: str) -> DeckCardEntry:
             card_number=prefixed_id.group("number"),
         )
 
-    trailing_set = re.match(r"^(?P<name>.+?)\s+\((?P<set>[A-Z]{2,4})\)\s*$", remainder)
+    trailing_set = re.match(r"^(?P<name>.+?)\s+\((?P<set>[A-Z][A-Z0-9]{1,4})\)\s*$", remainder)
     if trailing_set:
         return DeckCardEntry(
             quantity=count,
