@@ -76,6 +76,9 @@ class GameSession:
     round_number: int = 1
     consecutive_passes: int = 0
     first_passer_id: str | None = None
+    # Multiplayer (Twin Suns free-for-all). Empty turn_order => 2-player mode.
+    turn_order: list[str] = field(default_factory=list)
+    eliminated: set[str] = field(default_factory=set)
 
 
 @dataclass(slots=True)
@@ -174,6 +177,115 @@ class GameService:
             "format": normalized_format,
             "starting_player": starter,
             "state": self.get_game_state(game_id=resolved_game_id, viewer=starter, reveal_all=False),
+        }
+
+    # ----- Multiplayer (Twin Suns free-for-all) ------------------------------
+    def start_multiplayer_game(
+        self,
+        *,
+        decklists: list[str],
+        names: list[str] | None = None,
+        format_name: str = "twin suns",
+        game_id: str | None = None,
+    ) -> dict[str, Any]:
+        nf = normalize_format(format_name)
+        gid = game_id or f"game-{uuid4().hex[:8]}"
+        n = len(decklists)
+        names = names or [f"P{i + 1}" for i in range(n)]
+        players: dict[str, PlayerGameState] = {}
+        order: list[str] = []
+        for i, dlist in enumerate(decklists):
+            pid = f"p{i}"
+            sess_id = f"{gid}:{pid}"
+            self.deck_service.upload_deck(dlist, session_id=sess_id, format_name=nf, draw_opening_hand=True)
+            players[pid] = PlayerGameState(
+                player_id=pid, display_name=names[i], deck_session_id=sess_id, is_ai=True
+            )
+            order.append(pid)
+        game = GameSession(
+            game_id=gid, format_name=nf, players=players,
+            active_player_id=order[0], priority_player_id=order[0],
+            turn_order=order,
+            log=[f"Multiplayer game started: {', '.join(names)}. {names[0]} acts first."],
+        )
+        self.games[gid] = game
+        self._seed_initial_resources(game)
+        return {"game_id": gid, "players": order,
+                "state": self.get_game_state(game_id=gid, viewer=order[0], reveal_all=False)}
+
+    def _living(self, game: GameSession) -> list[str]:
+        return [p for p in game.turn_order if p not in game.eliminated]
+
+    def _next_living(self, game: GameSession, player_id: str) -> str:
+        order = game.turn_order
+        if player_id in order:
+            i = order.index(player_id)
+            for k in range(1, len(order) + 1):
+                cand = order[(i + k) % len(order)]
+                if cand not in game.eliminated:
+                    return cand
+        return player_id
+
+    def _opponents(self, game: GameSession, player_id: str) -> list[str]:
+        return [p for p in self._living(game) if p != player_id]
+
+    def _base_hp_remaining(self, game: GameSession, player_id: str) -> int:
+        sess = self._deck_session_for(game, player_id)
+        total = 0
+        for b in sess.bases:
+            total += self._effective_hp(b, sess.card_index[b.lookup_id]) - b.damage
+        return max(0, total)
+
+    def simulate_multiplayer(self, *, game_id: str, max_rounds: int = 40) -> dict[str, Any]:
+        game = self._get_game(game_id)
+        if not game.turn_order:
+            raise ValueError("simulate_multiplayer requires a game started with start_multiplayer_game.")
+        safety = 0
+        max_actions = max_rounds * 60
+        stuck = 0
+        while not game.winner and game.round_number <= max_rounds:
+            safety += 1
+            if safety > max_actions:
+                break
+            active = game.priority_player_id if game.pending_effects else game.active_player_id
+            if active in game.eliminated:
+                game.active_player_id = self._next_living(game, active)
+                game.priority_player_id = game.active_player_id
+                continue
+            log_before = len(game.log)
+            try:
+                self.take_ai_turn(game_id=game_id, player_id=active, max_actions=12)
+            except Exception:
+                try:
+                    self.take_action(game_id=game_id, player_id=active,
+                                     action="pass_priority" if game.pending_effects else "end_turn")
+                except Exception:
+                    break
+            if len(game.log) == log_before:
+                stuck += 1
+                if stuck == 6:
+                    game.pending_effects.clear()
+                    game.pending_combat = None
+                    game.priority_player_id = game.active_player_id
+                elif stuck >= 12:
+                    try:
+                        self._end_turn(game, game.active_player_id)
+                    except Exception:
+                        break
+            else:
+                stuck = 0
+
+        # No KO winner within the round cap: Twin Suns tiebreak = most base HP.
+        if not game.winner:
+            living = self._living(game)
+            if living:
+                game.winner = max(living, key=lambda p: self._base_hp_remaining(game, p))
+        return {
+            "game_id": game_id,
+            "winner_name": game.players[game.winner].display_name if game.winner else None,
+            "rounds": game.round_number,
+            "eliminated": [game.players[p].display_name for p in game.turn_order if p in game.eliminated],
+            "final_bases": {game.players[p].display_name: self._base_hp_remaining(game, p) for p in game.turn_order},
         }
 
     def get_game_state(
@@ -285,8 +397,7 @@ class GameService:
 
         player_state = game.players[player_id]
         session = self._deck_session_for(game, player_id)
-        opponent_id = self._other_player_id(player_id)
-        opponent_session = self._deck_session_for(game, opponent_id)
+        opponent_id = None if game.turn_order else self._other_player_id(player_id)
         actions: list[dict[str, Any]] = []
 
         if player_state.resources_played_this_turn == 0:
@@ -348,7 +459,11 @@ class GameService:
                         {"action": "use_leader_ability", "card_name": leader_state.name, "ability": "bounce_replay"}
                     )
 
-        actions.extend(self._attack_actions(session=session, opponent_session=opponent_session))
+        # Attacks: every living opponent (multiplayer) or the single other (2p).
+        attack_opp_ids = self._opponents(game, player_id) if game.turn_order else [opponent_id]
+        for _opp in attack_opp_ids:
+            actions.extend(self._attack_actions(
+                session=session, opponent_session=self._deck_session_for(game, _opp), target_player_id=_opp))
         actions.append({"action": "end_turn"})
         return {
             "game_id": game_id,
@@ -414,6 +529,7 @@ class GameService:
                 source_zone=source_zone,
                 target_name=target_name,
                 target_zone=target_zone,
+                target_player_id=target_player_id,
             )
         elif normalized_action == "end_turn":
             result = self._end_turn(game, player_id)
@@ -477,7 +593,7 @@ class GameService:
             effect.target_zone = target_zone
             effect.target_player_id = target_player_id or default_target_player(effect)
             game.stack_passes = 0
-            game.priority_player_id = self._other_player_id(player_id)
+            game.priority_player_id = self._pri_next(game, player_id)
             game.log.append(f"{game.players[player_id].display_name} chose {target_name} for {effect.source_name}.")
             return {
                 "game_id": game_id,
@@ -503,7 +619,8 @@ class GameService:
         if not game.pending_effects:
             raise ValueError("There is no stack to pass on.")
         game.stack_passes += 1
-        if game.stack_passes >= 2:
+        pass_needed = len(self._living(game)) if game.turn_order else 2
+        if game.stack_passes >= pass_needed:
             resolved = self._resolve_single_top_effect(game)
             return {
                 "game_id": game_id,
@@ -512,7 +629,7 @@ class GameService:
                 "remaining": len(game.pending_effects),
                 "state": self.get_game_state(game_id=game_id, viewer=player_id, reveal_all=False),
             }
-        game.priority_player_id = self._other_player_id(player_id)
+        game.priority_player_id = self._pri_next(game, player_id)
         return {
             "game_id": game_id,
             "passed": True,
@@ -570,10 +687,13 @@ class GameService:
             if game.pending_effects or game.pending_combat:
                 continue
             if took_board_action:
-                # One action per priority window: pass to the opponent so the
+                # One action per priority window: pass to the next player so the
                 # action phase truly alternates (the whole point of this model).
                 game.consecutive_passes = 0
-                game.active_player_id = self._other_player_id(player_id)
+                game.active_player_id = (
+                    self._next_living(game, player_id) if game.turn_order
+                    else self._other_player_id(player_id)
+                )
                 game.priority_player_id = game.active_player_id
                 break
             if game.active_player_id != player_id:
@@ -1070,11 +1190,12 @@ class GameService:
         source_zone: str,
         target_name: str,
         target_zone: str,
+        target_player_id: str | None = None,
     ) -> dict[str, Any]:
         if game.pending_combat:
             raise ValueError("A combat is already pending resolution.")
         attacker_session = self._deck_session_for(game, player_id)
-        defender_id = self._other_player_id(player_id)
+        defender_id = target_player_id or self._other_player_id(player_id)
         defender_session = self._deck_session_for(game, defender_id)
         attacker = self.deck_service._find_game_card(attacker_session, card_name=attacker_name, zone=source_zone)
         if not attacker.ready:
@@ -1119,9 +1240,12 @@ class GameService:
             game.first_passer_id = player_id
         game.consecutive_passes += 1
         game.log.append(f"{game.players[player_id].display_name} passed.")
-        if game.consecutive_passes >= 2:
+        # Phase ends when ALL active players pass in succession (2 in 1v1, N in
+        # an N-player game).
+        pass_threshold = len(self._living(game)) if game.turn_order else 2
+        if game.consecutive_passes >= pass_threshold:
             return self._regroup(game)
-        other = self._other_player_id(player_id)
+        other = self._next_living(game, player_id) if game.turn_order else self._other_player_id(player_id)
         game.active_player_id = other
         game.priority_player_id = other
         return {"passed": player_id, "next_player": other}
@@ -1191,6 +1315,18 @@ class GameService:
     def _other_player_id(self, player_id: str) -> str:
         return "opponent" if player_id == "player" else "player"
 
+    def _pri_next(self, game: GameSession, player_id: str) -> str:
+        """Next player to get priority — rotates through living players in
+        multiplayer, the single other player in 1v1."""
+        return self._next_living(game, player_id) if game.turn_order else self._other_player_id(player_id)
+
+    def _an_opponent(self, game: GameSession, player_id: str) -> str:
+        """A valid living opponent to default 'enemy' effect targets to."""
+        if game.turn_order:
+            opps = self._opponents(game, player_id)
+            return opps[0] if opps else player_id
+        return self._other_player_id(player_id)
+
     def _lookup_id_in_hand(self, session: DeckSession, card_name: str) -> str:
         return session.hand[self._lookup_id_in_hand_index(session, card_name)]
 
@@ -1232,7 +1368,8 @@ class GameService:
         for resource in ready_resources[:cost]:
             resource.ready = False
 
-    def _attack_actions(self, *, session: DeckSession, opponent_session: DeckSession) -> list[dict[str, Any]]:
+    def _attack_actions(self, *, session: DeckSession, opponent_session: DeckSession,
+                        target_player_id: str | None = None) -> list[dict[str, Any]]:
         actions: list[dict[str, Any]] = []
         for zone_name, attackers in (("ground", session.ground_arena), ("space", session.space_arena)):
             opposing_zone = opponent_session.ground_arena if zone_name == "ground" else opponent_session.space_arena
@@ -1252,6 +1389,7 @@ class GameService:
                             "source_zone": zone_name,
                             "target_name": target.name,
                             "target_zone": target.zone,
+                            "target_player_id": target_player_id,
                         }
                     )
         return actions
@@ -1556,7 +1694,7 @@ class GameService:
 
     def _resolve_effect(self, game: GameSession, effect: PendingEffect) -> dict[str, Any] | None:
         controller_session = self._deck_session_for(game, effect.controller_id)
-        opponent_id = self._other_player_id(effect.controller_id)
+        opponent_id = (effect.target_player_id if (effect.target_player_id in game.players and effect.target_player_id != effect.controller_id) else self._an_opponent(game, effect.controller_id))
         opponent_session = self._deck_session_for(game, opponent_id)
 
         if effect.kind == "draw":
@@ -1711,6 +1849,20 @@ class GameService:
             game.log.append(f"{card_state.name} was defeated.")
 
     def _check_for_winner(self, game: GameSession) -> None:
+        if game.turn_order:  # multiplayer: dead base = elimination, last standing wins
+            for player_id in self._living(game):
+                session = self._deck_session_for(game, player_id)
+                for base in session.bases:
+                    raw_card = session.card_index[base.lookup_id]
+                    if base.damage >= self._effective_hp(base, raw_card):
+                        game.eliminated.add(player_id)
+                        game.log.append(f"{game.players[player_id].display_name}'s base was destroyed — eliminated.")
+                        break
+            living = self._living(game)
+            if len(living) == 1:
+                game.winner = living[0]
+                game.log.append(f"{game.players[game.winner].display_name} is the last player standing — winner.")
+            return
         for player_id, player_state in game.players.items():
             session = self._deck_session_for(game, player_id)
             for base in session.bases:
@@ -1893,7 +2045,7 @@ class GameService:
         if effect.target_name:
             return
         controller_session = self._deck_session_for(game, effect.controller_id)
-        opponent_id = self._other_player_id(effect.controller_id)
+        opponent_id = (effect.target_player_id if (effect.target_player_id in game.players and effect.target_player_id != effect.controller_id) else self._an_opponent(game, effect.controller_id))
         opponent_session = self._deck_session_for(game, opponent_id)
 
         if effect.target_scope == "source":
@@ -2038,7 +2190,8 @@ class GameService:
         mindless face-racer.
         """
         session = self._deck_session_for(game, player_id)
-        defender_session = self._deck_session_for(game, self._other_player_id(player_id))
+        defender_id = action.get("target_player_id") or self._other_player_id(player_id)
+        defender_session = self._deck_session_for(game, defender_id)
         target_zone = action["target_zone"]
         target_name = action["target_name"]
 
@@ -2059,8 +2212,8 @@ class GameService:
             raw = defender_session.card_index[base.lookup_id]
             remaining_hp = self._effective_hp(base, raw) - base.damage
             if a_pow >= remaining_hp:
-                return (10, a_pow)  # lethal — take it
-            return (6, a_pow)       # pressure the base (aggression is the default win-con)
+                return (10, a_pow)        # lethal — take it
+            return (6, -remaining_hp)     # pressure the base; focus-fire the weakest opponent
 
         try:
             defender = self.deck_service._find_game_card(defender_session, card_name=target_name, zone=target_zone)
