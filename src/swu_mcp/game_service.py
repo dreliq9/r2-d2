@@ -36,6 +36,9 @@ class PlayerGameState:
     deck_session_id: str
     is_ai: bool = False
     resources_played_this_turn: int = 0
+    # SWU Force token — you either have it or you don't (cap 1). Created by
+    # Force-leader / base abilities, spent by abilities that "use the Force".
+    force_tokens: int = 0
 
 
 @dataclass(slots=True)
@@ -315,9 +318,9 @@ class GameService:
 
         for leader_state in session.leaders:
             raw_card = session.card_index[leader_state.lookup_id]
-            deploy_cost = parse_int(raw_card.get("cost")) or 0
             if leader_state.deployed:
                 continue
+            deploy_cost = parse_int(raw_card.get("cost")) or 0
             if len(session.resources) >= deploy_cost:
                 actions.append(
                     {
@@ -327,6 +330,23 @@ class GameService:
                         "threshold": deploy_cost,
                     }
                 )
+            # Leader action abilities — usable while in the leader zone and ready
+            # (using one exhausts the leader; it readies in regroup).
+            if leader_state.ready:
+                ftext = str(raw_card.get("front_text") or "").lower()
+                if "create your force token" in ftext and player_state.force_tokens < 1:
+                    actions.append(
+                        {"action": "use_leader_ability", "card_name": leader_state.name, "ability": "force_token"}
+                    )
+                if (
+                    "return a friendly non-leader unit" in ftext
+                    and "for free" in ftext
+                    and player_state.force_tokens >= 1
+                    and self._quigon_bounce_available(session)
+                ):
+                    actions.append(
+                        {"action": "use_leader_ability", "card_name": leader_state.name, "ability": "bounce_replay"}
+                    )
 
         actions.extend(self._attack_actions(session=session, opponent_session=opponent_session))
         actions.append({"action": "end_turn"})
@@ -380,6 +400,10 @@ class GameService:
             if not card_name:
                 raise ValueError("deploy_leader action requires card_name.")
             result = self._deploy_leader(game, player_id, card_name)
+        elif normalized_action == "use_leader_ability":
+            if not card_name:
+                raise ValueError("use_leader_ability action requires card_name.")
+            result = self._use_leader_ability(game, player_id, card_name)
         elif normalized_action == "attack":
             if not card_name or not target_name or not source_zone or not target_zone:
                 raise ValueError("attack action requires card_name, target_name, source_zone, and target_zone.")
@@ -408,7 +432,7 @@ class GameService:
 
         # Any board action (not a pass) breaks a pass streak: the action phase
         # only ends when BOTH players pass in succession.
-        if normalized_action in {"resource", "play", "deploy_leader", "attack"}:
+        if normalized_action in {"resource", "play", "deploy_leader", "attack", "use_leader_ability"}:
             game.consecutive_passes = 0
             game.first_passer_id = None
 
@@ -944,6 +968,98 @@ class GameService:
         )
         self._start_stack(game, controller_id=player_id)
         return result["played"]
+
+    # ----- Leader action abilities -------------------------------------------
+    def _arena_units(self, session: DeckSession) -> list[GameCardState]:
+        return list(session.ground_arena) + list(session.space_arena)
+
+    def _raw_cost(self, session: DeckSession, lookup_id: str) -> int:
+        return parse_int(session.card_index[lookup_id].get("cost")) or 0
+
+    def _best_bounce_replay(self, session: DeckSession) -> tuple[GameCardState, str] | None:
+        """Qui-Gon's line: return a friendly non-leader unit, then play a cheaper
+        non-Villainy unit free. Only worthwhile if the replay re-fires a When
+        Played, so we require that. Bounce the cheapest unit that enables it
+        (least tempo lost) and replay the most expensive eligible unit."""
+        units = sorted(self._arena_units(session), key=lambda u: self._raw_cost(session, u.lookup_id))
+        for unit in units:
+            u_cost = self._raw_cost(session, unit.lookup_id)
+            best_replay: str | None = None
+            for lid in session.hand:
+                raw = session.card_index[lid]
+                if str(raw.get("card_type")) != "Unit":
+                    continue
+                if "Villainy" in (raw.get("aspects") or []):
+                    continue
+                if "When Played" not in str(raw.get("front_text") or ""):
+                    continue
+                if self._raw_cost(session, lid) >= u_cost:
+                    continue
+                if best_replay is None or self._raw_cost(session, lid) > self._raw_cost(session, best_replay):
+                    best_replay = lid
+            if best_replay is not None:
+                return unit, best_replay
+        return None
+
+    def _quigon_bounce_available(self, session: DeckSession) -> bool:
+        return self._best_bounce_replay(session) is not None
+
+    def _use_leader_ability(self, game: GameSession, player_id: str, card_name: str) -> dict[str, Any]:
+        session = self._deck_session_for(game, player_id)
+        leader_state = self._leader_state(session, card_name)
+        raw = session.card_index[leader_state.lookup_id]
+        ftext = str(raw.get("front_text") or "").lower()
+        ps = game.players[player_id]
+        if leader_state.deployed:
+            raise ValueError(f"{card_name} is deployed and no longer has its leader ability.")
+        if not leader_state.ready:
+            raise ValueError(f"{card_name} is exhausted.")
+
+        if "create your force token" in ftext:
+            leader_state.ready = False
+            if ps.force_tokens < 1:
+                ps.force_tokens = 1
+            game.log.append(f"{ps.display_name} used {card_name}: created a Force token.")
+            return {"ability": "force_token", "force_tokens": ps.force_tokens}
+
+        if "return a friendly non-leader unit" in ftext and "for free" in ftext:
+            if ps.force_tokens < 1:
+                raise ValueError("No Force token to spend.")
+            pair = self._best_bounce_replay(session)
+            if not pair:
+                raise ValueError("No valid bounce/replay available.")
+            bounce_state, replay_lid = pair
+            leader_state.ready = False
+            ps.force_tokens -= 1
+            for arena in (session.ground_arena, session.space_arena):
+                if bounce_state in arena:
+                    arena.remove(bounce_state)
+                    break
+            session.hand.append(bounce_state.lookup_id)
+            game.log.append(
+                f"{ps.display_name} used {card_name}: returned {bounce_state.name} to hand (used the Force)."
+            )
+            replay_raw = session.card_index[replay_lid]
+            replay_name = str(replay_raw["display_name"])
+            self.deck_service.play_card(
+                session_id=session.session_id,
+                card_name=replay_name,
+                source_zone="hand",
+                destination=first_arena(replay_raw) or "ground",
+                ready=False,
+            )
+            game.log.append(f"{ps.display_name} played {replay_name} for free.")
+            self._queue_play_effects(
+                game,
+                controller_id=player_id,
+                raw_card=replay_raw,
+                source_name=replay_name,
+                source_lookup_id=replay_lid,
+            )
+            self._start_stack(game, controller_id=player_id)
+            return {"ability": "bounce_replay", "bounced": bounce_state.name, "replayed": replay_name}
+
+        raise ValueError(f"{card_name} has no supported leader action ability.")
 
     def _attack(
         self,
@@ -1877,6 +1993,19 @@ class GameService:
         resource_actions = [action for action in actions if action["action"] == "resource"]
         if resource_actions:
             return max(resource_actions, key=lambda action: self._card_priority_for_resource(session, action["card_name"]))
+
+        # Leader action abilities — the engine. Fire the bounce/replay payoff
+        # when it's set up, otherwise bank a Force token to fuel it. Kept ahead
+        # of deploy_leader so the AI doesn't flip its combo leaders into vanilla
+        # bodies while their abilities still matter.
+        ability_actions = [action for action in actions if action["action"] == "use_leader_ability"]
+        if ability_actions:
+            bounce = [a for a in ability_actions if a.get("ability") == "bounce_replay"]
+            if bounce:
+                return bounce[0]
+            token = [a for a in ability_actions if a.get("ability") == "force_token"]
+            if token:
+                return token[0]
 
         play_actions = [action for action in actions if action["action"] == "play"]
         if play_actions:
