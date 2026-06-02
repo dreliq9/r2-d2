@@ -37,6 +37,12 @@ TARGET_AVG_COST_PREMIER = 3.4
 TARGET_AVG_COST_TWIN_SUNS = 2.7
 TARGET_AVG_COST = TARGET_AVG_COST_PREMIER  # back-compat for existing references
 COST_OVERRUN_W = -3.0
+# Proactive per-card curve penalty, applied ONLY when the caller sets an
+# explicit target_avg_cost (the "curve lever"). Subtracts CURVE_PENALTY_W for
+# each cost point a card sits above the target, so a low target actively pushes
+# the brew toward a cheaper, faster curve. Default (None) leaves the legacy
+# reactive-only behavior untouched.
+CURVE_PENALTY_W = 14.0
 # Off-aspect singletons hurt twice in Twin Suns: you pay the +2 *and* you can't
 # resource around it because there's only one copy. Stronger negative weight.
 OFF_ASPECT_PER_ICON_PREMIER = -25.0
@@ -1099,9 +1105,19 @@ class DeckService:
         meta_context: dict[str, Any] | None = None,
         only_owned: bool = False,
         allow_off_aspect: bool = False,
+        target_avg_cost: float | None = None,
     ) -> dict[str, Any]:
         self.card_service._ensure_local_catalog()
         normalized_format = normalize_format(format_name)
+        # Curve lever: an explicit target average cost (lower = more aggressive).
+        # When None, use the format default and keep the legacy reactive-only
+        # penalty. When set, also enable a proactive per-card penalty (see
+        # CURVE_PENALTY_W) that biases the whole brew toward that curve.
+        curve_override = target_avg_cost is not None
+        effective_target_cost = (
+            float(target_avg_cost) if curve_override
+            else (TARGET_AVG_COST_TWIN_SUNS if normalized_format == TWIN_SUNS else TARGET_AVG_COST_PREMIER)
+        )
         meta_summary = normalize_meta_context(target_matchups=target_matchups, meta_context=meta_context)
         leaders = self._pick_leaders(
             theme=theme,
@@ -1184,7 +1200,13 @@ class DeckService:
                 budget=budget,
                 meta_summary=meta_summary,
                 format_name=normalized_format,
-            ) + REPLAY_QUALITY_W * replay_quality(candidate)
+            ) + REPLAY_QUALITY_W * replay_quality(candidate) - (
+                CURVE_PENALTY_W * max(
+                    0.0,
+                    (parse_int(candidate.get("cost") or candidate.get("Cost")) or 0) - effective_target_cost,
+                )
+                if curve_override else 0.0
+            )
 
         # Cache provides/needs/traits sets for every card we may score against.
         interaction_cache: dict[int, tuple[set[str], set[str], set[str]]] = {}
@@ -1297,19 +1319,16 @@ class DeckService:
                 return False
             return True
 
-        # Soft curve penalty: once running average cost exceeds target, penalise
-        # any candidate above the running average proportionally to overshoot.
-        target_avg_cost = (
-            TARGET_AVG_COST_TWIN_SUNS
-            if normalized_format == TWIN_SUNS
-            else TARGET_AVG_COST_PREMIER
-        )
+        # Soft curve penalty: once running average cost exceeds the effective
+        # target, penalise any candidate above the running average proportionally
+        # to overshoot. Complements the proactive per-card curve penalty folded
+        # into base_scores when a target_avg_cost override is set.
         def cost_overrun_penalty(candidate: dict[str, Any]) -> float:
             picked_costs = [parse_int((d.get("cost") or d.get("Cost"))) or 0 for d in deck_so_far if d.get("card_type") == "Unit"]
             if not picked_costs:
                 return 0.0
             avg_now = sum(picked_costs) / len(picked_costs)
-            if avg_now <= target_avg_cost:
+            if avg_now <= effective_target_cost:
                 return 0.0
             cand_cost = parse_int(candidate.get("cost")) or 0
             if cand_cost <= avg_now:
