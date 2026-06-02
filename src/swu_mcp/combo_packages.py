@@ -273,15 +273,35 @@ def _replay_enabler(c: dict) -> bool:
     txt = _text(c)
     if not txt:
         return False
-    patterns = [
-        r"return a (friendly )?(non-leader )?unit (to|to its)",
-        r"return [\w'\-]+ to its owner",
-        r"return [\w'\-]+ to your hand",
-        r"play a (unit|card) from your (hand|discard)",
+    low = txt.lower()
+    # Bounce of a FRIENDLY/own unit back to a hand is the canonical replay
+    # enabler: returning your own unit lets you replay it to re-fire its
+    # When Played. The old pattern required "unit" to sit immediately before
+    # "to", so any qualifier clause broke the match ("non-leader, non-Vehicle
+    # unit to ...", "unit that costs 3 or less to ...", "unit from your discard
+    # pile to ..."). We now allow arbitrary qualifiers between "unit" and the
+    # hand, bounded to a single sentence ([^.]) so we don't span clauses.
+    #
+    # Enemy bounce is deliberately EXCLUDED here: it's strong tempo/removal but
+    # it doesn't enable the self-replay loop (you can't replay an opponent's
+    # unit for value). Those cards still earn replay *payoff* credit if they
+    # have a When Played trigger, plus removal/tempo scoring — they're just not
+    # tagged as replay-engine enablers.
+    bounce_patterns = [
+        r"return\b[^.]*?\bunits?\b[^.]*?\bto (?:its|their) owner",
+        r"return\b[^.]*?\bunits?\b[^.]*?\bto your hand",
+    ]
+    for p in bounce_patterns:
+        for m in re.finditer(p, low):
+            if "enemy" not in m.group(0):
+                return True
+    # Direct replay phrasings — friendly by construction.
+    direct = [
+        r"play a (?:unit|card) from your (?:hand|discard)",
         r"play [\w'\- ]+ for free",
         r"put [\w'\- ]+ from your discard pile into play",
     ]
-    return any(re.search(p, txt, re.IGNORECASE) for p in patterns)
+    return any(re.search(p, low) for p in direct)
 
 
 def _replay_payoff(c: dict) -> bool:
