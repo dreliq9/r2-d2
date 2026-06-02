@@ -319,7 +319,7 @@ def swu_suggest_cards(
     )
 
 
-@mcp.tool(description="Generate a first-pass Star Wars Unlimited brew around a theme. Set only_owned=True to build only with cards in your loaded collection (quantities will be capped by ownership).")
+@mcp.tool(description="Generate a first-pass Star Wars Unlimited brew around a theme. Set only_owned=True to build only with cards in your loaded collection (quantities will be capped by ownership). By default the deck is restricted to on-aspect cards (the aspects granted by the two leaders plus the base); set allow_off_aspect=True to permit off-aspect splashes that cost extra resources.")
 def swu_generate_deck(
     theme: str,
     format_name: str = "premier",
@@ -330,6 +330,7 @@ def swu_generate_deck(
     target_matchups: list[str] | None = None,
     meta_context: dict | None = None,
     only_owned: bool = False,
+    allow_off_aspect: bool = False,
 ) -> dict:
     return deck_service.generate_deck(
         theme=theme,
@@ -341,6 +342,7 @@ def swu_generate_deck(
         target_matchups=target_matchups,
         meta_context=meta_context,
         only_owned=only_owned,
+        allow_off_aspect=allow_off_aspect,
     )
 
 

@@ -1093,6 +1093,7 @@ class DeckService:
         target_matchups: list[str] | None = None,
         meta_context: dict[str, Any] | None = None,
         only_owned: bool = False,
+        allow_off_aspect: bool = False,
     ) -> dict[str, Any]:
         self.card_service._ensure_local_catalog()
         normalized_format = normalize_format(format_name)
@@ -1109,6 +1110,20 @@ class DeckService:
 
         base = self._pick_base(base_name=base_name, aspect_pool=aspect_pool, only_owned=only_owned)
         aspect_pool.update(base.get("aspects", []))
+
+        # Legal aspect identity = the aspects actually granted by the two leaders
+        # plus the base. A card is "on-aspect" only if every aspect pip it bears
+        # is covered by this set; anything else costs +2 resources per missing
+        # pip in play. Unlike aspect_pool (which folds in caller-supplied
+        # primary_aspects as a *theme* hint), this set is the hard legality
+        # boundary used to gate card eligibility when allow_off_aspect is False.
+        legal_aspects: set[str] = set()
+        for leader in leaders:
+            legal_aspects.update(leader.get("aspects", []))
+        legal_aspects.update(base.get("aspects", []))
+
+        def card_on_aspect(card: dict[str, Any]) -> bool:
+            return set(card.get("aspects") or []).issubset(legal_aspects)
 
         target_main_size = PREMIER_MAIN_DECK_MIN if normalized_format == PREMIER else TWIN_SUNS_MAIN_DECK_MIN
         candidate_pool = self._candidate_cards(goal_query=compile_goal_query(theme), available_aspects=aspect_pool, only_owned=only_owned)
@@ -1258,12 +1273,20 @@ class DeckService:
                 )
             return total
 
-        def eligible(candidate: dict[str, Any]) -> bool:
+        def eligible(candidate: dict[str, Any], *, enforce_aspect: bool = True) -> bool:
             if str(candidate.get("card_type")) in {"Leader", "Base"}:
                 return False
             if id_counts[card_key(candidate)] >= copy_limit:
                 return False
             if collection_active and not self._candidate_is_owned(candidate):
+                return False
+            # Hard aspect-legality gate. Without this the generator treats
+            # off-aspect cards as a soft scoring penalty, so a strong theme
+            # match (e.g. "Force"/"Jedi") drags in off-aspect cards the deck
+            # can't cast efficiently. When allow_off_aspect is False we exclude
+            # them outright; the relaxed backfill below re-enables them only if
+            # the on-aspect pool can't fill the deck.
+            if enforce_aspect and not allow_off_aspect and not card_on_aspect(candidate):
                 return False
             return True
 
@@ -1365,8 +1388,16 @@ class DeckService:
         # Backfill: if any section under-quota'd (e.g. tiny owned pool),
         # grab top-scoring eligible cards regardless of type to hit deck size.
         current_total = sum(entry.quantity for entry in main_cards)
-        if current_total < target_main_size:
-            backfill_pool = [c for c in pool if eligible(c)]
+
+        def run_backfill(*, enforce_aspect: bool) -> int:
+            """Greedily add top-scoring eligible cards until the deck hits
+            target size. Returns how many card-copies it added. When
+            enforce_aspect is False the aspect-legality gate is dropped, so this
+            is used as a relaxed second pass only if the on-aspect pool runs dry.
+            """
+            nonlocal current_total
+            added = 0
+            backfill_pool = [c for c in pool if eligible(c, enforce_aspect=enforce_aspect)]
             while current_total < target_main_size and backfill_pool:
                 aspect_pool_now = deck_aspect_pool()
                 best = None
@@ -1414,6 +1445,17 @@ class DeckService:
                 id_counts[key] += quantity
                 type_counts[str(best.get("card_type", "Unit"))] += quantity
                 current_total += quantity
+                added += quantity
+            return added
+
+        # Strict pass first (honors the aspect gate). If the on-aspect owned
+        # pool can't reach deck size, relax the gate so the deck is still legal
+        # by count — and record how many off-aspect cards we had to admit so the
+        # caller can surface it.
+        run_backfill(enforce_aspect=True)
+        off_aspect_filled = 0
+        if current_total < target_main_size and not allow_off_aspect:
+            off_aspect_filled = run_backfill(enforce_aspect=False)
 
         parsed = ParsedDeck(
             format_name=normalized_format,
@@ -1462,7 +1504,24 @@ class DeckService:
             "notes": [
                 "This first-pass generator prioritizes on-aspect cards, early curve stability, and cards that match the requested theme language.",
                 "You can improve it further by uploading the generated list and using swu_suggest_cards with matchup-specific goals.",
-            ],
+            ]
+            + (
+                [
+                    f"Aspect gate active (legal aspects: {', '.join(sorted(legal_aspects)) or 'none'}). "
+                    f"The on-aspect pool could not fill the deck, so {off_aspect_filled} off-aspect "
+                    "card(s) were admitted to reach legal size — consider replacing them or pass "
+                    "allow_off_aspect=True if a splash is intended."
+                ]
+                if off_aspect_filled
+                else (
+                    [
+                        f"Aspect gate active: deck built only from on-aspect cards "
+                        f"({', '.join(sorted(legal_aspects)) or 'none'}). Pass allow_off_aspect=True to permit splashes."
+                    ]
+                    if not allow_off_aspect
+                    else []
+                )
+            ),
         }
 
     def rank_leader_pairs(
