@@ -103,7 +103,7 @@ def _pilot_enabler(c: dict) -> bool:
 
 
 def _pilot_payoff(c: dict) -> bool:
-    txt = _text(c)
+    txt = re.sub(r"\bnon[- ]Vehicle units?\b", "", _text(c), flags=re.IGNORECASE)
     return bool(
         re.search(r"\bPilot unit", txt)
         or re.search(r"\bVehicle unit", txt)

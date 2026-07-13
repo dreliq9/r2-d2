@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 from .card_identity import CanonicalCardKey, OwnedPrinting, canonical_key
@@ -24,18 +25,26 @@ def _read_card_cache(set_code: str, card_number: str) -> dict | None:
         return None
 
 
+@lru_cache(maxsize=1)
+def _local_catalog() -> LocalCatalog:
+    return LocalCatalog(settings.card_catalog_path)
+
+
 def _read_card_catalog(set_code: str, card_number: str) -> dict | None:
     if not settings.card_catalog_path:
         return None
     try:
-        card = LocalCatalog(settings.card_catalog_path).lookup(set_code, card_number)
+        catalog = _local_catalog()
+        if not catalog.is_available():
+            return None
+        card = catalog.lookup(set_code, card_number)
     except (OSError, ValueError, json.JSONDecodeError):
         return None
     return card.raw or card.to_dict() if card is not None else None
 
 
 def _enrichment_fields(set_code: str, card_number: str) -> dict:
-    card = _read_card_cache(set_code, card_number)
+    card = _read_card_cache(set_code, card_number) or _read_card_catalog(set_code, card_number)
     if not card:
         return {}
     return {
@@ -151,7 +160,10 @@ class CollectionService:
 
         cards: list[dict] = []
         for entry in self._entries.values():
-            card = _read_card_cache(entry.set_code, entry.card_number)
+            card = _read_card_cache(entry.set_code, entry.card_number) or _read_card_catalog(
+                entry.set_code,
+                entry.card_number,
+            )
             if not card:
                 continue
             # Inject lookup_id so profile can reference cards consistently

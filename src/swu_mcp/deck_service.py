@@ -54,6 +54,8 @@ OFF_ASPECT_PER_ICON_TWIN_SUNS = -40.0
 TWIN_SUNS_BASE_PRESSURE_KEYWORDS = {"Ambush", "Overwhelm", "Saboteur", "Raid"}
 TWIN_SUNS_BASE_PRESSURE_BONUS = 3.0
 TWIN_SUNS_LEADER_SYNERGY_BONUS = 4.0
+BASE_TYPE_TARGET_FRACTIONS = {"Unit": 0.78, "Event": 0.17, "Upgrade": 0.05}
+UPGRADE_ENGINE_TYPE_TARGET_FRACTIONS = {"Unit": 0.60, "Event": 0.17, "Upgrade": 0.23}
 
 # Per-aspect role identity (synthesized from SWU community deckbuilding guides:
 # Dexerto archetype guide, Card Gamer aspects guide, The Fifth Trooper, and
@@ -254,6 +256,36 @@ def card_copy_override(card: dict | None) -> int | None:
     if m.group(1):
         return int(m.group(1))
     return 999  # "any number"
+
+
+def type_target_fractions(
+    *,
+    theme: str,
+    leaders: list[dict[str, Any]],
+    format_name: str,
+) -> dict[str, float]:
+    text = " ".join(
+        [theme]
+        + [
+            " ".join(
+                str(leader.get(key) or "")
+                for key in (
+                    "front_text",
+                    "FrontText",
+                    "back_text",
+                    "BackText",
+                    "epic_action",
+                    "EpicAction",
+                )
+            )
+            for leader in leaders
+        ]
+    ).lower()
+    is_twin_suns = normalize_format(format_name) == TWIN_SUNS
+    if is_twin_suns and re.search(r"\bupgrades?\b", text):
+        return dict(UPGRADE_ENGINE_TYPE_TARGET_FRACTIONS)
+    return dict(BASE_TYPE_TARGET_FRACTIONS)
+
 
 PREMIER_MAIN_DECK_MIN = 50
 PREMIER_SIDEBOARD_MAX = 10
@@ -1114,6 +1146,7 @@ class DeckService:
                 [
                     str(candidate.get("display_name", "")),
                     str(candidate.get("front_text", "")),
+                    str(candidate.get("card_type", "")),
                     " ".join(candidate.get("traits", [])),
                     " ".join(candidate.get("keywords", [])),
                 ]
@@ -1299,11 +1332,11 @@ class DeckService:
                 return str(lid)
             return f"{card.get('set_code')}/{card.get('number')}"
 
-        TYPE_TARGET_FRACTIONS = {"Unit": 0.78, "Event": 0.17, "Upgrade": 0.05}
-        type_targets = {
-            ctype: max(1, int(round(target_main_size * frac)))
-            for ctype, frac in TYPE_TARGET_FRACTIONS.items()
-        }
+        type_fractions = type_target_fractions(
+            theme=theme,
+            leaders=leaders,
+            format_name=normalized_format,
+        )
         type_counts: Counter[str] = Counter()
 
         from .combo_packages import replay_quality
@@ -1367,6 +1400,8 @@ class DeckService:
                 package_support[p] += 1
             for p in tags["pays_off"]:
                 package_support[p] += 1
+        anchor_packages = set(package_support)
+        target_packages = set(thesis.target_packages)
 
         COMBO_ACTIVE_THRESHOLD = 2     # at least N supporters → +2 per pkg
         COMBO_STRONG_THRESHOLD = 5     # at least N supporters → +3 per pkg
@@ -1379,6 +1414,8 @@ class DeckService:
                 return 0.0
             total = 0.0
             for pkg in cand_pkgs:
+                if pkg not in target_packages and pkg not in anchor_packages:
+                    continue
                 support = package_support[pkg]
                 if support >= COMBO_STRONG_THRESHOLD:
                     total += 3.0
@@ -1456,7 +1493,7 @@ class DeckService:
         # to target_main_size exactly; spill rounding into Units (largest slot).
         section_quotas = {
             ctype: int(round(target_main_size * frac))
-            for ctype, frac in TYPE_TARGET_FRACTIONS.items()
+            for ctype, frac in type_fractions.items()
         }
         slot_diff = target_main_size - sum(section_quotas.values())
         section_quotas["Unit"] += slot_diff
@@ -2736,6 +2773,7 @@ class DeckService:
                     [
                         str(card.get("display_name", "")),
                         str(card.get("front_text", "")),
+                        str(card.get("card_type", "")),
                         " ".join(card.get("traits", [])),
                         " ".join(card.get("keywords", [])),
                     ]
@@ -3461,6 +3499,7 @@ def generation_score(
         [
             str(card.get("display_name", "")),
             str(card.get("front_text", "")),
+            str(card.get("card_type", "")),
             " ".join(card.get("traits", [])),
             " ".join(card.get("keywords", [])),
         ]
