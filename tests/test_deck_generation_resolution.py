@@ -524,6 +524,8 @@ def test_owned_candidate_discovery_reuses_supplied_printing_cache(tmp_path: Path
 
 def test_suggestion_candidate_discovery_keeps_search_fallback() -> None:
     service = DeckService(CardService())
+    service.card_service.catalog = LocalCatalog(None)
+    service.card_service._ensure_local_catalog = lambda: None  # type: ignore[method-assign]
     fallback_card = {
         "lookup_id": "LOF/020",
         "set_code": "LOF",
