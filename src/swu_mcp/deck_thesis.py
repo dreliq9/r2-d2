@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 import re
 from typing import Any
 
+from .archetypes import match_archetype
+
 
 # Theme keyword → combo package(s) it implies. Shared by thesis construction
 # and leader-pair ranking so both use the same package vocabulary.
@@ -141,6 +143,15 @@ def build_deck_thesis(
         for card in leaders + ([base] if base else [])
         for aspect in (card.get("aspects") or card.get("Aspects") or [])
     }
+    archetype = match_archetype(leaders, format_name)
+    signature_cards: tuple[str, ...] = ()
+    if archetype is not None:
+        packages |= set(archetype.package_targets)
+        signature_cards = archetype.signature_cards
+        for role, ideal in archetype.role_targets.items():
+            current = role_targets.get(role)
+            if current is not None:
+                role_targets[role] = _target(current.minimum, max(current.ideal, ideal), current.maximum)
     return DeckThesis(
         format_name=format_name,
         leader_names=tuple(str(leader.get("display_name") or leader.get("Name") or "") for leader in leaders),
@@ -151,6 +162,7 @@ def build_deck_thesis(
         type_targets=type_targets,
         curve_targets={"0-2": 24, "3-4": 18, "5+": 8},
         arena_targets={"Ground": 24, "Space": 16},
+        signature_cards=signature_cards,
         matchup_priorities=tuple(str(item) for item in (meta_context or {}).get("priorities", [])),
         notes=tuple(notes),
     )
