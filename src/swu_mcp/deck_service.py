@@ -2621,42 +2621,8 @@ class DeckService:
             # Higher new-aspect count first, then higher HP as tiebreak.
             return (new_aspects, hp)
 
-        # When only_owned, walk the collection's owned bases via the local
-        # cache (NOT via lookup_card, which hits the API every time and
-        # explodes when this method runs hundreds of times during a
-        # leader-pair ranking sweep). The cache file stores the same data
-        # the API would return.
         if only_owned and self.collection_service is not None:
-            from .collection_service import _read_card_cache
-            self.collection_service._load_from_disk()
-            owned_bases: list[dict[str, Any]] = []
-            for entry in self.collection_service._entries.values():
-                cached = _read_card_cache(entry.set_code, entry.card_number)
-                if not cached or cached.get("Type") != "Base":
-                    continue
-                # Normalize to the lookup_card-style dict shape so downstream
-                # consumers (which expect lower-cased keys) keep working.
-                normalized = {
-                    "lookup_id": f"{entry.set_code.upper()}/{str(entry.card_number).zfill(3)}",
-                    "set_code": entry.set_code.upper(),
-                    "number": str(entry.card_number).zfill(3),
-                    "name": cached.get("Name"),
-                    "subtitle": cached.get("Subtitle"),
-                    "display_name": (
-                        f"{cached.get('Name')} - {cached.get('Subtitle')}"
-                        if cached.get("Subtitle")
-                        else cached.get("Name")
-                    ),
-                    "card_type": cached.get("Type"),
-                    "type": cached.get("Type"),
-                    "aspects": cached.get("Aspects") or [],
-                    "traits": cached.get("Traits") or [],
-                    "keywords": cached.get("Keywords") or [],
-                    "hp": cached.get("HP"),
-                    "front_text": cached.get("FrontText") or "",
-                    "rarity": cached.get("Rarity"),
-                }
-                owned_bases.append(normalized)
+            owned_bases = self._owned_cards_of_type("Base")
             if owned_bases:
                 owned_bases.sort(key=_score_base, reverse=True)
                 return owned_bases[0]
