@@ -867,6 +867,24 @@ class DeckService:
         parsed = self._resolve_deck_input(session_id=session_id, decklist=decklist, format_name=format_name)
         return self.validate_parsed_deck(parsed)
 
+    def goldfish_deck_report(
+        self,
+        *,
+        decklist: str,
+        format_name: str = PREMIER,
+        games: int = 20,
+        seed: int = 1,
+    ) -> dict[str, Any]:
+        from .deck_testing import goldfish_deck
+
+        report = goldfish_deck(self, decklist, format_name, games=games, seed=seed)
+        return {
+            "games": report.games,
+            "average_opening_playables": report.average_opening_playables,
+            "average_opening_resources": report.average_opening_resources,
+            "limitations": list(report.limitations),
+        }
+
     def analyze_deck(
         self,
         *,
