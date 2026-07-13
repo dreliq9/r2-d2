@@ -235,3 +235,28 @@ def test_optimize_deck_only_owned_rejects_swap_exceeding_owned_canonical_quantit
 
     assert result["swaps"] == []
     assert result["final_score"] == result["initial_score"]
+
+
+def test_optimize_deck_only_owned_rejects_initial_deck_exceeding_owned_canonical_quantity(tmp_path: Path) -> None:
+    service = DeckService(
+        CardService(),
+        collection_service=CollectionService(tmp_path / "collection.json"),
+    )
+    owned_card = _unit("Owned Limit Unit", number=30)
+    filler = [_entry(_unit(f"Limit Filler Unit {index}", number=300 + index)) for index in range(47)]
+    parsed = _premier_shell([
+        _entry(owned_card, quantity=3),
+        *filler,
+    ])
+    service.resolve_deck = lambda _parsed: parsed  # type: ignore[method-assign]
+    service._resolve_owned_printing = lambda card: card  # type: ignore[method-assign]
+    service._candidate_owned_count = lambda card: 1 if card["display_name"] == "Owned Limit Unit" else 4  # type: ignore[method-assign]
+    service._candidate_cards = lambda **_kwargs: pytest.fail("optimizer searched candidates before owned quantity check")  # type: ignore[method-assign]
+
+    with pytest.raises(ValueError, match="Deck exceeds owned card quantities"):
+        service.optimize_deck(
+            decklist={"main_deck": []},
+            theme="units",
+            only_owned=True,
+            max_iterations=0,
+        )

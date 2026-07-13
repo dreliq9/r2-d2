@@ -1642,6 +1642,7 @@ class DeckService:
         parsed = self.resolve_deck(self.parse_decklist(decklist=decklist, format_name=format_name))
         if only_owned:
             parsed = self._resolve_owned_deck(parsed)
+            self._require_owned_quantities_available(parsed)
         leaders = [entry.card for entry in parsed.leaders if entry.card]
         base = parsed.bases[0].card if parsed.bases and parsed.bases[0].card else None
         thesis = build_deck_thesis(theme=theme, leaders=leaders, base=base, format_name=parsed.format_name)
@@ -1718,6 +1719,27 @@ class DeckService:
             self._candidate_owned_count(representative[identity]) >= quantity
             for identity, quantity in required.items()
         )
+
+    def _require_owned_quantities_available(self, parsed: ParsedDeck) -> None:
+        required: Counter = Counter()
+        representative: dict[Any, dict[str, Any]] = {}
+        for card in expand_entries(parsed.main_deck + parsed.sideboard):
+            identity = canonical_key(card)
+            required[identity] += 1
+            representative.setdefault(identity, card)
+
+        over_limit: list[str] = []
+        for identity, quantity in sorted(required.items()):
+            owned_quantity = self._candidate_owned_count(representative[identity])
+            if owned_quantity < quantity:
+                name = str(
+                    representative[identity].get("display_name")
+                    or representative[identity].get("name")
+                    or identity.name
+                )
+                over_limit.append(f"{name} requires {quantity} copies, but only {owned_quantity} owned.")
+        if over_limit:
+            raise ValueError("Deck exceeds owned card quantities: " + "; ".join(over_limit))
 
     def _resolve_owned_deck(self, parsed: ParsedDeck) -> ParsedDeck:
         if self.collection_service is None:
