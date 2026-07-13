@@ -14,6 +14,14 @@ def _strip_accents(text: str) -> str:
 
 from .models import CardRecord
 
+SET_ALIASES = {
+    "JTLP": "JTLOP",
+    "LOFP": "LOFOP",
+    "LAWP": "LAWOP",
+}
+TOKEN_ALIAS_SET = "TOKENS"
+TOKEN_SOURCE_SET = "TSOR"
+
 
 class LocalCatalog:
     def __init__(self, catalog_path: str | None = None) -> None:
@@ -48,6 +56,18 @@ class LocalCatalog:
         for card in self.all_cards():
             if card.set_code == normalized_set and normalize_card_number(card.number) == normalized_number:
                 return card
+        if normalized_set == TOKEN_ALIAS_SET:
+            raw_number = str(card_number).strip().upper()
+            if raw_number.isdigit():
+                token_number = normalize_card_number(f"T{int(raw_number):02d}")
+                for card in self.all_cards():
+                    if card.set_code == TOKEN_SOURCE_SET and normalize_card_number(card.number) == token_number:
+                        return card
+        alias_set = SET_ALIASES.get(normalized_set)
+        if alias_set:
+            for card in self.all_cards():
+                if card.set_code == alias_set and normalize_card_number(card.number) == normalized_number:
+                    return card
         return None
 
     def lookup_by_name(

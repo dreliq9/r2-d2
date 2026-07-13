@@ -27,7 +27,50 @@ Arena = Literal["Ground", "Space"]
 Rarity = Literal["Common", "Uncommon", "Rare", "Legendary", "Special"]
 
 # Set codes mirror card_service.CATALOG_SET_CODES
-SetCode = Literal["SOR", "SHD", "TWI", "JTL", "LOF", "IBH", "SOP", "LAW"]
+SetCode = Literal[
+    "ASH",
+    "ASHOP",
+    "C24",
+    "C25",
+    "ESOR",
+    "G25",
+    "GG",
+    "IBH",
+    "J24",
+    "J25",
+    "SOR",
+    "SHD",
+    "TWI",
+    "JTL",
+    "JTLOP",
+    "JTLP",
+    "LOF",
+    "LOFOP",
+    "LOFP",
+    "LAW",
+    "LAWOP",
+    "LAWP",
+    "P25",
+    "P26",
+    "PSHD",
+    "PSOR",
+    "PTWI",
+    "SEC",
+    "SECOP",
+    "SHDOP",
+    "SOP",
+    "SOROP",
+    "SOROPJ",
+    "SS1",
+    "SS1J",
+    "SS2",
+    "SS2J",
+    "TASH",
+    "TOKENS",
+    "TS26",
+    "TSOR",
+    "TWIOP",
+]
 
 SearchOrder = Literal["name", "setnumber", "cost", "power", "hp", "rarity", "set"]
 SortDirection = Literal["asc", "desc"]

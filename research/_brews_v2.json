@@ -1,0 +1,404 @@
+{
+  "deck_text": "Heroism Vehicle Pilot Rebel Attack-Run Aggro Starfighter Twin Suns Brew\nLeaders\n1 Luke Skywalker - Hero of Yavin\n1 Admiral Ackbar - It's A Trap!\n\nBase\n1 Chopper Base - Atollon\n\nMain Deck\n1 R2-D2 - Artooooooooo!\n1 Biggs Darklighter - They'll Never Stop Us\n1 Dagger Squadron Pilot\n1 Sabine's Masterpiece - Crazy Colorful\n1 Anakin Skywalker - I'll Try Spinning\n1 Red Five - Running the Trench\n1 BB-8 - Happy Beeps\n1 Han Solo - Has His Moments\n1 Blockade Runner\n1 Hopeful Volunteer\n1 Razor Crest - Ride For Hire\n1 Resistance X-Wing\n1 Frisk - Vanguard Loudmouth\n1 Independent Smuggler\n1 Jedi Starfighter\n1 Hera Syndulla - We've Lost Enough\n1 Red Squadron Y-Wing\n1 Fireball - An Explosion With Wings\n1 Mist Hunter - The Findsman's Pursuit\n1 BoShek - Charismatic Smuggler\n1 Luke Skywalker - You Still With Me?\n1 Red Leader - Form Up\n1 Sidon Ithano - The Crimson Corsair\n1 Tantive IV - Fleeing the Empire\n1 Determined Recruit\n1 X-34 Landspeeder\n1 Paige Tico - Dropping the Hammer\n1 Sullustan Spacer\n1 Shadowed Hover Tank\n1 Orbiting K-Wing\n1 AT-DP Occupier\n1 Peli Motto - I Should Charge You More\n1 Cartel Interceptor\n1 Captain Tarkin - Full Forward Assault\n1 Corporate Light Cruiser\n1 Academy Graduate\n1 Crackshot V-Wing\n1 Astromech Pilot\n1 Supporting Eta-2\n1 Jarek Yeager - Coordinating With The Resistance\n1 Blade Squadron B-Wing\n1 Trace Martez - Trusting Sister\n1 Flanking Fang Fighter\n1 The Legacy Run - Doomed Debris\n1 Medical Frigate\n1 Corellian Freighter\n1 Poe Dameron - One Hell of a a Pilot\n1 Quasar TIE Carrier\n1 Qui-Gon Jinn's Aethersprite - Guided by the Force\n1 Blue Squadron Assault Wing\n1 Admiral Yularen - Fleet Coordinator\n1 Retrofitted Airspeeder\n1 indoctrinated Conscript\n1 Black Squadron Scout Wing\n1 Clone Pilot\n1 Bunker Defender\n1 Longbeam Cruiser\n1 Republic Y-Wing\n1 Rebellious Hammerhead\n1 Dilapidated Ski Speeder\n1 Forged Starfighter\n1 Echo Base Engineer\n1 Stay on Target\n1 Fly Casual\n1 Punch It\n1 Electromagnetic Pulse\n1 I Have You Now\n1 Force Choke\n1 Prepare For Takeoff\n1 Prepare for Takeoff\n1 Salvage\n1 Direct Hit\n1 Focus Fire\n1 Protect the Pod\n1 Eject\n1 Koiogran Turn\n1 Ascension Cable\n1 Twin Laser Turret\n1 Heavy Blaster Cannon\n1 Qui-Gon Jinn's Lightsaber",
+  "analysis": {
+    "format": "twin_suns",
+    "leaders": [
+      "Luke Skywalker - Hero of Yavin",
+      "Admiral Ackbar - It's A Trap!"
+    ],
+    "base": "Chopper Base - Atollon",
+    "validation": {
+      "format": "twin_suns",
+      "legal": true,
+      "errors": [],
+      "warnings": [
+        "26 cards are off-aspect and will cost extra resources unless you plan to pay the penalty."
+      ],
+      "counts": {
+        "leaders": 2,
+        "bases": 1,
+        "main_deck": 80,
+        "sideboard": 0
+      },
+      "copy_counts": {
+        "main_deck": {
+          "AT-DP Occupier": 1,
+          "Academy Graduate": 1,
+          "Admiral Yularen - Fleet Coordinator": 1,
+          "Anakin Skywalker - I'll Try Spinning": 1,
+          "Ascension Cable": 1,
+          "Astromech Pilot": 1,
+          "BB-8 - Happy Beeps": 1,
+          "Biggs Darklighter - They'll Never Stop Us": 1,
+          "Black Squadron Scout Wing": 1,
+          "Blade Squadron B-Wing": 1,
+          "Blockade Runner": 1,
+          "Blue Squadron Assault Wing": 1,
+          "BoShek - Charismatic Smuggler": 1,
+          "Bunker Defender": 1,
+          "Captain Tarkin - Full Forward Assault": 1,
+          "Cartel Interceptor": 1,
+          "Clone Pilot": 1,
+          "Corellian Freighter": 1,
+          "Corporate Light Cruiser": 1,
+          "Crackshot V-Wing": 1,
+          "Dagger Squadron Pilot": 1,
+          "Determined Recruit": 1,
+          "Dilapidated Ski Speeder": 1,
+          "Direct Hit": 1,
+          "Echo Base Engineer": 1,
+          "Eject": 1,
+          "Electromagnetic Pulse": 1,
+          "Fireball - An Explosion With Wings": 1,
+          "Flanking Fang Fighter": 1,
+          "Fly Casual": 1,
+          "Focus Fire": 1,
+          "Force Choke": 1,
+          "Forged Starfighter": 1,
+          "Frisk - Vanguard Loudmouth": 1,
+          "Han Solo - Has His Moments": 1,
+          "Heavy Blaster Cannon": 1,
+          "Hera Syndulla - We've Lost Enough": 1,
+          "Hopeful Volunteer": 1,
+          "I Have You Now": 1,
+          "Independent Smuggler": 1,
+          "Jarek Yeager - Coordinating With The Resistance": 1,
+          "Jedi Starfighter": 1,
+          "Koiogran Turn": 1,
+          "Longbeam Cruiser": 1,
+          "Luke Skywalker - You Still With Me?": 1,
+          "Medical Frigate": 1,
+          "Mist Hunter - The Findsman's Pursuit": 1,
+          "Orbiting K-Wing": 1,
+          "Paige Tico - Dropping the Hammer": 1,
+          "Peli Motto - I Should Charge You More": 1,
+          "Poe Dameron - One Hell of a a Pilot": 1,
+          "Prepare For Takeoff": 1,
+          "Prepare for Takeoff": 1,
+          "Protect the Pod": 1,
+          "Punch It": 1,
+          "Quasar TIE Carrier": 1,
+          "Qui-Gon Jinn's Aethersprite - Guided by the Force": 1,
+          "Qui-Gon Jinn's Lightsaber": 1,
+          "R2-D2 - Artooooooooo!": 1,
+          "Razor Crest - Ride For Hire": 1,
+          "Rebellious Hammerhead": 1,
+          "Red Five - Running the Trench": 1,
+          "Red Leader - Form Up": 1,
+          "Red Squadron Y-Wing": 1,
+          "Republic Y-Wing": 1,
+          "Resistance X-Wing": 1,
+          "Retrofitted Airspeeder": 1,
+          "Sabine's Masterpiece - Crazy Colorful": 1,
+          "Salvage": 1,
+          "Shadowed Hover Tank": 1,
+          "Sidon Ithano - The Crimson Corsair": 1,
+          "Stay on Target": 1,
+          "Sullustan Spacer": 1,
+          "Supporting Eta-2": 1,
+          "Tantive IV - Fleeing the Empire": 1,
+          "The Legacy Run - Doomed Debris": 1,
+          "Trace Martez - Trusting Sister": 1,
+          "Twin Laser Turret": 1,
+          "X-34 Landspeeder": 1,
+          "indoctrinated Conscript": 1
+        },
+        "sideboard": {}
+      },
+      "aspect_penalties": {
+        "available_aspects": [
+          "Aggression",
+          "Cunning",
+          "Heroism"
+        ],
+        "card_count": 26,
+        "total_extra_resource_burden": 52,
+        "cards": [
+          {
+            "card": "Hera Syndulla - We've Lost Enough",
+            "quantity": 1,
+            "missing_aspects": [
+              "Vigilance"
+            ],
+            "extra_cost_per_copy": 2
+          },
+          {
+            "card": "Mist Hunter - The Findsman's Pursuit",
+            "quantity": 1,
+            "missing_aspects": [
+              "Villainy"
+            ],
+            "extra_cost_per_copy": 2
+          },
+          {
+            "card": "Luke Skywalker - You Still With Me?",
+            "quantity": 1,
+            "missing_aspects": [
+              "Command"
+            ],
+            "extra_cost_per_copy": 2
+          },
+          {
+            "card": "Red Leader - Form Up",
+            "quantity": 1,
+            "missing_aspects": [
+              "Command"
+            ],
+            "extra_cost_per_copy": 2
+          },
+          {
+            "card": "Paige Tico - Dropping the Hammer",
+            "quantity": 1,
+            "missing_aspects": [
+              "Vigilance"
+            ],
+            "extra_cost_per_copy": 2
+          },
+          {
+            "card": "Academy Graduate",
+            "quantity": 1,
+            "missing_aspects": [
+              "Vigilance"
+            ],
+            "extra_cost_per_copy": 2
+          },
+          {
+            "card": "Astromech Pilot",
+            "quantity": 1,
+            "missing_aspects": [
+              "Vigilance"
+            ],
+            "extra_cost_per_copy": 2
+          },
+          {
+            "card": "Jarek Yeager - Coordinating With The Resistance",
+            "quantity": 1,
+            "missing_aspects": [
+              "Command"
+            ],
+            "extra_cost_per_copy": 2
+          },
+          {
+            "card": "Trace Martez - Trusting Sister",
+            "quantity": 1,
+            "missing_aspects": [
+              "Vigilance"
+            ],
+            "extra_cost_per_copy": 2
+          },
+          {
+            "card": "Poe Dameron - One Hell of a a Pilot",
+            "quantity": 1,
+            "missing_aspects": [
+              "Command"
+            ],
+            "extra_cost_per_copy": 2
+          },
+          {
+            "card": "Quasar TIE Carrier",
+            "quantity": 1,
+            "missing_aspects": [
+              "Villainy"
+            ],
+            "extra_cost_per_copy": 2
+          },
+          {
+            "card": "Admiral Yularen - Fleet Coordinator",
+            "quantity": 1,
+            "missing_aspects": [
+              "Vigilance"
+            ],
+            "extra_cost_per_copy": 2
+          },
+          {
+            "card": "indoctrinated Conscript",
+            "quantity": 1,
+            "missing_aspects": [
+              "Villainy"
+            ],
+            "extra_cost_per_copy": 2
+          },
+          {
+            "card": "Clone Pilot",
+            "quantity": 1,
+            "missing_aspects": [
+              "Command"
+            ],
+            "extra_cost_per_copy": 2
+          },
+          {
+            "card": "Bunker Defender",
+            "quantity": 1,
+            "missing_aspects": [
+              "Command"
+            ],
+            "extra_cost_per_copy": 2
+          },
+          {
+            "card": "Forged Starfighter",
+            "quantity": 1,
+            "missing_aspects": [
+              "Villainy"
+            ],
+            "extra_cost_per_copy": 2
+          },
+          {
+            "card": "Echo Base Engineer",
+            "quantity": 1,
+            "missing_aspects": [
+              "Vigilance"
+            ],
+            "extra_cost_per_copy": 2
+          },
+          {
+            "card": "I Have You Now",
+            "quantity": 1,
+            "missing_aspects": [
+              "Villainy"
+            ],
+            "extra_cost_per_copy": 2
+          },
+          {
+            "card": "Force Choke",
+            "quantity": 1,
+            "missing_aspects": [
+              "Villainy"
+            ],
+            "extra_cost_per_copy": 2
+          },
+          {
+            "card": "Prepare For Takeoff",
+            "quantity": 1,
+            "missing_aspects": [
+              "Command"
+            ],
+            "extra_cost_per_copy": 2
+          },
+          {
+            "card": "Prepare for Takeoff",
+            "quantity": 1,
+            "missing_aspects": [
+              "Command"
+            ],
+            "extra_cost_per_copy": 2
+          },
+          {
+            "card": "Salvage",
+            "quantity": 1,
+            "missing_aspects": [
+              "Command"
+            ],
+            "extra_cost_per_copy": 2
+          },
+          {
+            "card": "Direct Hit",
+            "quantity": 1,
+            "missing_aspects": [
+              "Vigilance"
+            ],
+            "extra_cost_per_copy": 2
+          },
+          {
+            "card": "Focus Fire",
+            "quantity": 1,
+            "missing_aspects": [
+              "Command"
+            ],
+            "extra_cost_per_copy": 2
+          },
+          {
+            "card": "Protect the Pod",
+            "quantity": 1,
+            "missing_aspects": [
+              "Command"
+            ],
+            "extra_cost_per_copy": 2
+          },
+          {
+            "card": "Eject",
+            "quantity": 1,
+            "missing_aspects": [
+              "Command"
+            ],
+            "extra_cost_per_copy": 2
+          }
+        ]
+      }
+    },
+    "deck_size": 80,
+    "average_cost": 2.79,
+    "resource_curve": {
+      "0": 1,
+      "1": 15,
+      "2": 27,
+      "3": 13,
+      "4": 11,
+      "5": 8,
+      "6": 4,
+      "7+": 1
+    },
+    "type_breakdown": {
+      "Event": 14,
+      "Unit": 62,
+      "Upgrade": 4
+    },
+    "aspect_breakdown": {
+      "Aggression": 20,
+      "Command": 12,
+      "Cunning": 23,
+      "Heroism": 32,
+      "Vigilance": 8,
+      "Villainy": 6
+    },
+    "keyword_breakdown": {
+      "Piloting": 22,
+      "Sentinel": 7,
+      "Raid": 6,
+      "Ambush": 5,
+      "Overwhelm": 3,
+      "Saboteur": 3,
+      "Restore": 3,
+      "Grit": 2,
+      "Keyword": 1,
+      "Shielded": 1
+    },
+    "trait_breakdown": {
+      "VEHICLE": 34,
+      "PILOT": 23,
+      "FIGHTER": 18,
+      "REBEL": 16,
+      "REPUBLIC": 12,
+      "RESISTANCE": 9,
+      "FRINGE": 8,
+      "TACTIC": 8,
+      "CAPITAL SHIP": 7,
+      "TRANSPORT": 4
+    },
+    "role_breakdown": {
+      "board_presence": 62,
+      "removal": 28,
+      "defense": 18,
+      "card_advantage": 10,
+      "tempo": 10,
+      "base_pressure": 4
+    },
+    "available_aspects": [
+      "Aggression",
+      "Cunning",
+      "Heroism"
+    ],
+    "synergy_score": 62,
+    "style_notes": [
+      "Board-centric shell with enough units to pressure both arenas.",
+      "Removal density looks healthy enough for interactive matchups.",
+      "The list has a solid value engine for grindy games."
+    ],
+    "meta_summary": {
+      "target_matchups": [],
+      "pressure": {},
+      "priorities": [],
+      "notes": []
+    },
+    "matchup_scores": {}
+  }
+}
