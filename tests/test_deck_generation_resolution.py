@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from swu_mcp.card_service import CardService
+from swu_mcp.catalog import LocalCatalog
 from swu_mcp.collection_service import CollectionService
 from swu_mcp.deck_service import DeckService, TWIN_SUNS
 
@@ -193,6 +194,54 @@ def test_automatic_owned_leader_selection_uses_collection_without_search(tmp_pat
     )
 
     assert {leader["lookup_id"] for leader in leaders} == {"LOF/016", "LOF/007"}
+
+
+def test_normal_automatic_selection_uses_local_catalog_without_search(tmp_path: Path) -> None:
+    catalog_path = tmp_path / "cards.json"
+    catalog_path.write_text(
+        json.dumps(
+            [
+                {
+                    "Set": "LOF",
+                    "Number": "016",
+                    "Name": "Qui-Gon Jinn",
+                    "Subtitle": "Student of the Living Force",
+                    "Type": "Leader",
+                    "Aspects": ["Vigilance"],
+                },
+                {
+                    "Set": "LOF",
+                    "Number": "007",
+                    "Name": "Avar Kriss",
+                    "Subtitle": "Marshal of Starlight",
+                    "Type": "Leader",
+                    "Aspects": ["Vigilance"],
+                },
+                {
+                    "Set": "LOF",
+                    "Number": "010",
+                    "Name": "Echo Base",
+                    "Type": "Base",
+                    "Aspects": ["Vigilance"],
+                    "HP": "30",
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    service = DeckService(CardService())
+    service.card_service.catalog = LocalCatalog(str(catalog_path))
+    service.card_service.search_cards = lambda **_: pytest.fail("normal selection used live search")  # type: ignore[method-assign]
+
+    leaders = service._pick_leaders(
+        theme="Force replay",
+        format_name=TWIN_SUNS,
+        leader_names=None,
+    )
+    base = service._pick_base(base_name=None, aspect_pool=set())
+
+    assert {leader["lookup_id"] for leader in leaders} == {"LOF/016", "LOF/007"}
+    assert base["lookup_id"] == "LOF/010"
 
 
 def test_automatic_owned_base_selection_fails_without_owned_base(tmp_path: Path) -> None:

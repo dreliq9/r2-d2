@@ -2519,21 +2519,24 @@ class DeckService:
         elif only_owned and self.collection_service is not None:
             leaders = self._owned_cards_of_type("Leader")
         else:
-            result = self.card_service.search_cards(query=theme, filters={"type": "Leader"}, limit=25)
-            leaders = []
-            for card in result["cards"][:15]:
-                looked_up = self._safe_lookup(card)
-                if looked_up is not None and looked_up.get("card_type") == "Leader":
-                    leaders.append(looked_up)
+            self.card_service._ensure_local_catalog()
+            if not self.card_service.catalog.is_available():
+                raise ValueError("No local leader data available for automatic selection.")
+            leaders = [
+                card.to_dict()
+                for card in self.card_service.catalog.search(theme, filters={"type": "Leader"}, limit=25)
+                if card.card_type == "Leader"
+            ]
         if not leaders:
             if only_owned and self.collection_service is not None:
                 raise ValueError("Could not resolve owned leader for automatic selection.")
-            fallback = self.card_service.search_cards(query="*", filters={"type": "Leader"}, limit=25)
-            leaders = []
-            for card in fallback["cards"]:
-                looked_up = self._safe_lookup(card)
-                if looked_up is not None and looked_up.get("card_type") == "Leader":
-                    leaders.append(looked_up)
+            leaders = [
+                card.to_dict()
+                for card in self.card_service.catalog.search("", filters={"type": "Leader"}, limit=25)
+                if card.card_type == "Leader"
+            ]
+            if not leaders:
+                raise ValueError("No local leader data available for automatic selection.")
 
         if only_owned and self.collection_service is not None:
             owned_leaders = [
@@ -2649,7 +2652,6 @@ class DeckService:
         # the API would return.
         if only_owned and self.collection_service is not None:
             from .collection_service import _read_card_cache
-            from .config import settings
             self.collection_service._load_from_disk()
             owned_bases: list[dict[str, Any]] = []
             for entry in self.collection_service._entries.values():
@@ -2684,25 +2686,18 @@ class DeckService:
                 return owned_bases[0]
             raise ValueError("Could not resolve owned base for automatic selection.")
 
-        # Fallback: API search. Still prefer aspect expansion in scoring.
-        result = self.card_service.search_cards(
-            query="*", filters={"type": "Base"}, limit=50
-        )
-        looked_up_pool: list[dict[str, Any]] = []
-        for candidate in result.get("cards", []):
-            looked_up = self._safe_lookup(candidate)
-            if looked_up is not None and looked_up.get("card_type") == "Base":
-                looked_up_pool.append(looked_up)
-        if not looked_up_pool:
-            # Last-ditch: return the raw first hit if any
-            if result.get("cards"):
-                first = result["cards"][0]
-                return self.card_service.lookup_card(
-                    set_code=first["set_code"], card_number=first["number"],
-                )
-            raise RuntimeError("No bases available to pick from.")
-        looked_up_pool.sort(key=_score_base, reverse=True)
-        return looked_up_pool[0]
+        self.card_service._ensure_local_catalog()
+        if not self.card_service.catalog.is_available():
+            raise ValueError("No local base data available for automatic selection.")
+        local_bases = [
+            card.to_dict()
+            for card in self.card_service.catalog.search("", filters={"type": "Base"}, limit=50)
+            if card.card_type == "Base"
+        ]
+        if not local_bases:
+            raise ValueError("No local base data available for automatic selection.")
+        local_bases.sort(key=_score_base, reverse=True)
+        return local_bases[0]
 
     def _parse_deck_dict(self, payload: dict[str, Any], format_name: str) -> ParsedDeck:
         parsed = ParsedDeck(format_name=format_name, title=payload.get("title"))
