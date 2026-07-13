@@ -571,6 +571,28 @@ class DeckService:
         )
         return resolved
 
+    def _owned_cards_of_type(self, card_type: str) -> list[dict[str, Any]]:
+        if self.collection_service is None:
+            return []
+        owned_cards: list[dict[str, Any]] = []
+        for identity, printings in self.collection_service.owned_canonical_index().items():
+            if identity.card_type != card_type or not any(printing.count > 0 for printing in printings):
+                continue
+            display_name = identity.name
+            if identity.subtitle:
+                display_name = f"{display_name} - {identity.subtitle}"
+            card = self._resolve_owned_printing(
+                {
+                    "name": identity.name,
+                    "subtitle": identity.subtitle,
+                    "display_name": display_name,
+                    "card_type": identity.card_type,
+                }
+            )
+            if card is not None:
+                owned_cards.append(card)
+        return sorted(owned_cards, key=lambda card: str(card.get("lookup_id", "")))
+
     def _safe_lookup(self, card: dict[str, Any]) -> dict[str, Any] | None:
         try:
             return self.card_service.lookup_card(
@@ -2494,6 +2516,8 @@ class DeckService:
                 format_name=format_name,
                 only_owned=only_owned,
             )
+        elif only_owned and self.collection_service is not None:
+            leaders = self._owned_cards_of_type("Leader")
         else:
             result = self.card_service.search_cards(query=theme, filters={"type": "Leader"}, limit=25)
             leaders = []
@@ -2502,6 +2526,8 @@ class DeckService:
                 if looked_up is not None and looked_up.get("card_type") == "Leader":
                     leaders.append(looked_up)
         if not leaders:
+            if only_owned and self.collection_service is not None:
+                raise ValueError("Could not resolve owned leader for automatic selection.")
             fallback = self.card_service.search_cards(query="*", filters={"type": "Leader"}, limit=25)
             leaders = []
             for card in fallback["cards"]:

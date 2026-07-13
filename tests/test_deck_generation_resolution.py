@@ -11,7 +11,7 @@ from swu_mcp.deck_service import DeckService, TWIN_SUNS
 def _collection(path: Path, entries: list[dict[str, object]] | None = None) -> CollectionService:
     path.write_text(
         json.dumps(
-            {"entries": entries or [
+            {"entries": entries if entries is not None else [
             {
               "set_code": "LOF",
               "card_number": "016",
@@ -179,6 +179,20 @@ def test_automatic_owned_leader_selection_fails_without_owned_leaders(tmp_path: 
 
     with pytest.raises(ValueError, match="Could not resolve owned leader"):
         service._pick_leaders(theme="Jedi", format_name=TWIN_SUNS, leader_names=None, only_owned=True)
+
+
+def test_automatic_owned_leader_selection_uses_collection_without_search(tmp_path: Path) -> None:
+    service = DeckService(CardService(), collection_service=_collection(tmp_path / "collection.json"))
+    service.card_service.search_cards = lambda **_: pytest.fail("owned leader selection used live search")  # type: ignore[method-assign]
+
+    leaders = service._pick_leaders(
+        theme="Force replay",
+        format_name=TWIN_SUNS,
+        leader_names=None,
+        only_owned=True,
+    )
+
+    assert {leader["lookup_id"] for leader in leaders} == {"LOF/016", "LOF/007"}
 
 
 def test_automatic_owned_base_selection_fails_without_owned_base(tmp_path: Path) -> None:
