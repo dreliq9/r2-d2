@@ -92,6 +92,22 @@ def test_goldfish_resolves_set_number_main_deck_entries_locally(monkeypatch: pyt
     assert report.average_opening_resources == 6.0
 
 
+def test_goldfish_keeps_unresolved_set_number_entries_as_unknown_cost(monkeypatch: pytest.MonkeyPatch) -> None:
+    _use_local_catalog(monkeypatch)
+    monkeypatch.setattr(deck_service.card_service.catalog, "lookup", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        deck_service.card_service.catalog,
+        "lookup_by_name",
+        lambda *_args, **_kwargs: _local_card("Unrelated Unit", "1", "SOR/999"),
+    )
+
+    report = goldfish_deck(deck_service, "Main Deck\n6 SOR/001", PREMIER, games=1, seed=1)
+
+    assert report.average_opening_playables == 0.0
+    assert report.average_opening_resources == 6.0
+    assert "Unresolved main-deck entries remain in the sampled library as unknown-cost cards." in report.limitations
+
+
 def test_goldfish_reports_unresolved_cards_as_unknown_cost(monkeypatch: pytest.MonkeyPatch) -> None:
     _use_local_catalog(monkeypatch)
     monkeypatch.setattr(deck_service.card_service.catalog, "lookup", lambda *_args, **_kwargs: None)
@@ -102,6 +118,19 @@ def test_goldfish_reports_unresolved_cards_as_unknown_cost(monkeypatch: pytest.M
     assert report.average_opening_playables == 0.0
     assert report.average_opening_resources == 6.0
     assert "Unresolved main-deck entries remain in the sampled library as unknown-cost cards." in report.limitations
+
+
+def test_goldfish_counts_zero_cost_cards_as_playable(monkeypatch: pytest.MonkeyPatch) -> None:
+    _use_local_catalog(monkeypatch)
+    monkeypatch.setattr(
+        deck_service.card_service.catalog,
+        "lookup_by_name",
+        lambda name, **_kwargs: _local_card(name, "0", "SOR/001"),
+    )
+
+    report = goldfish_deck(deck_service, "Main Deck\n6 Free Unit", PREMIER, games=1, seed=1)
+
+    assert report.average_opening_playables == 6.0
 
 
 def test_goldfish_requires_at_least_one_game(monkeypatch: pytest.MonkeyPatch) -> None:

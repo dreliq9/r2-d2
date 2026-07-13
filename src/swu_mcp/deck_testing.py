@@ -35,7 +35,7 @@ def goldfish_deck(
         if card is None and entry.set_code and entry.card_number:
             local_card = deck_service.card_service.catalog.lookup(entry.set_code, entry.card_number)
             card = local_card.to_dict() if local_card else None
-        if card is None:
+        if card is None and entry.name.strip():
             local_card = deck_service.card_service.catalog.lookup_by_name(
                 entry.name,
                 exclude_types={"Leader", "Base"},
@@ -53,7 +53,9 @@ def goldfish_deck(
         shuffled = list(library)
         rng.shuffle(shuffled)
         hand = shuffled[:6]
-        playable_counts.append(sum(1 for card in hand if (parse_int(card.get("cost")) or 99) <= 2))
+        playable_counts.append(
+            sum(1 for card in hand if (cost := parse_int(card.get("cost"))) is not None and cost <= 2)
+        )
         resource_counts.append(len(hand))
     limitations = (
         "Goldfish report checks opening hand texture only.",
