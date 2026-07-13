@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from statistics import mean
 from typing import Any
 
+from .card_identity import canonical_key
 from .card_service import CardService
 from .collection_service import CollectionService
 from .interaction_glossary import (
@@ -2514,8 +2515,9 @@ class DeckService:
                 for leader in leaders
                 if (owned_leader := self._resolve_owned_printing(leader)) is not None
             ]
-            if owned_leaders:
-                leaders = owned_leaders
+            if not owned_leaders:
+                raise ValueError("Could not resolve owned leader for automatic selection.")
+            leaders = owned_leaders
 
         if format_name == PREMIER:
             return leaders[:1]
@@ -2559,6 +2561,8 @@ class DeckService:
             raise ValueError(
                 f"Twin Suns requires {TWIN_SUNS_LEADER_COUNT} requested leaders; resolved {len(leaders)}."
             )
+        if format_name == TWIN_SUNS and len({canonical_key(leader) for leader in leaders}) != TWIN_SUNS_LEADER_COUNT:
+            raise ValueError("Twin Suns requires two distinct canonical leaders.")
         return leaders
 
     def _resolve_leader_by_name(self, name: str) -> dict[str, Any] | None:
@@ -2652,6 +2656,7 @@ class DeckService:
             if owned_bases:
                 owned_bases.sort(key=_score_base, reverse=True)
                 return owned_bases[0]
+            raise ValueError("Could not resolve owned base for automatic selection.")
 
         # Fallback: API search. Still prefer aspect expansion in scoring.
         result = self.card_service.search_cards(

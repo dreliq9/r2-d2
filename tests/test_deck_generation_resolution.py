@@ -162,3 +162,51 @@ def test_owned_main_deck_candidate_resolves_to_canonical_printing(tmp_path: Path
     assert resolved["lookup_id"] == "LOF/020"
     assert service._candidate_is_owned(candidate)
     assert service._candidate_owned_count(candidate) == 2
+
+
+def test_automatic_owned_leader_selection_fails_without_owned_leaders(tmp_path: Path) -> None:
+    service = DeckService(CardService(), collection_service=_collection(tmp_path / "collection.json", entries=[]))
+    unowned_leader = {
+        "name": "Luke Skywalker",
+        "display_name": "Luke Skywalker",
+        "card_type": "Leader",
+        "set_code": "SOR",
+        "number": "001",
+        "lookup_id": "SOR/001",
+    }
+    service.card_service.search_cards = lambda **_: {"cards": [unowned_leader]}  # type: ignore[method-assign]
+    service._safe_lookup = lambda card: card  # type: ignore[method-assign]
+
+    with pytest.raises(ValueError, match="Could not resolve owned leader"):
+        service._pick_leaders(theme="Jedi", format_name=TWIN_SUNS, leader_names=None, only_owned=True)
+
+
+def test_automatic_owned_base_selection_fails_without_owned_base(tmp_path: Path) -> None:
+    service = DeckService(CardService(), collection_service=_collection(tmp_path / "collection.json", entries=[]))
+    unowned_base = {
+        "name": "Echo Base",
+        "display_name": "Echo Base",
+        "card_type": "Base",
+        "set_code": "SOR",
+        "number": "001",
+    }
+    service.card_service.search_cards = lambda **_: {"cards": [unowned_base]}  # type: ignore[method-assign]
+    service._safe_lookup = lambda card: card  # type: ignore[method-assign]
+
+    with pytest.raises(ValueError, match="Could not resolve owned base"):
+        service._pick_base(base_name=None, aspect_pool=set(), only_owned=True)
+
+
+def test_requested_twin_suns_duplicate_leaders_fail_loudly(tmp_path: Path) -> None:
+    service = DeckService(CardService(), collection_service=_collection(tmp_path / "collection.json"))
+
+    with pytest.raises(ValueError, match="two distinct canonical leaders"):
+        service._pick_leaders(
+            theme="Force replay",
+            format_name=TWIN_SUNS,
+            leader_names=[
+                "Qui-Gon Jinn - Student of the Living Force",
+                "Qui-Gon Jinn - Student of the Living Force",
+            ],
+            only_owned=True,
+        )
