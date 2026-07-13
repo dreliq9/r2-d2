@@ -537,20 +537,38 @@ class DeckService:
     def _candidate_is_owned(self, candidate: dict[str, Any], *, minimum: int = 1) -> bool:
         if self.collection_service is None:
             return True
-        set_code = candidate.get("set_code") or ""
-        number = candidate.get("number") or ""
-        if not set_code or not number:
-            return False
-        return self.collection_service.is_owned(str(set_code), str(number), quantity=minimum)
+        owned_printing = self.collection_service.choose_owned_printing(candidate)
+        return (
+            owned_printing is not None
+            and self.collection_service.owned_canonical_count(candidate) >= minimum
+        )
 
     def _candidate_owned_count(self, candidate: dict[str, Any]) -> int:
         if self.collection_service is None:
             return 0
-        set_code = candidate.get("set_code") or ""
-        number = candidate.get("number") or ""
-        if not set_code or not number:
-            return 0
-        return self.collection_service.owned_count(str(set_code), str(number))
+        return self.collection_service.owned_canonical_count(candidate)
+
+    def _resolve_owned_printing(self, card: dict[str, Any]) -> dict[str, Any] | None:
+        if self.collection_service is None:
+            return card
+        owned_printing = self.collection_service.choose_owned_printing(card)
+        if owned_printing is None:
+            return None
+        owned_card = self.card_service.catalog.lookup(
+            owned_printing.set_code,
+            owned_printing.card_number,
+        )
+        if owned_card is not None:
+            return owned_card.to_dict()
+        resolved = dict(card)
+        resolved.update(
+            {
+                "set_code": owned_printing.set_code,
+                "number": owned_printing.card_number,
+                "lookup_id": f"{owned_printing.set_code}/{owned_printing.card_number.zfill(3)}",
+            }
+        )
+        return resolved
 
     def _safe_lookup(self, card: dict[str, Any]) -> dict[str, Any] | None:
         try:
@@ -2393,8 +2411,11 @@ class DeckService:
             for card in local_cards:
                 if card["card_type"] in {"Leader", "Base"}:
                     continue
-                if restrict_to_owned and not self._candidate_is_owned(card):
-                    continue
+                if restrict_to_owned:
+                    owned_card = self._resolve_owned_printing(card)
+                    if owned_card is None:
+                        continue
+                    card = owned_card
                 searchable = " ".join(
                     [
                         str(card.get("display_name", "")),
@@ -2425,6 +2446,10 @@ class DeckService:
             except Exception:
                 continue
             for card in result["cards"]:
+                if restrict_to_owned:
+                    card = self._resolve_owned_printing(card)
+                    if card is None:
+                        continue
                 if card["lookup_id"] not in seen:
                     pools.append(card)
                     seen.add(card["lookup_id"])
@@ -2435,12 +2460,20 @@ class DeckService:
             except Exception:
                 continue
             for card in result["cards"]:
+                if restrict_to_owned:
+                    card = self._resolve_owned_printing(card)
+                    if card is None:
+                        continue
                 if card["lookup_id"] not in seen:
                     pools.append(card)
                     seen.add(card["lookup_id"])
         if not pools:
             fallback = self.card_service.search_cards(query="unit event", limit=60)
             for card in fallback["cards"]:
+                if restrict_to_owned:
+                    card = self._resolve_owned_printing(card)
+                    if card is None:
+                        continue
                 if card["lookup_id"] not in seen:
                     pools.append(card)
                     seen.add(card["lookup_id"])
@@ -2455,44 +2488,11 @@ class DeckService:
         only_owned: bool = False,
     ) -> list[dict[str, Any]]:
         if leader_names:
-            leaders = []
-            unresolved: list[str] = []
-            for name in leader_names:
-                leader = self._resolve_leader_by_name(name)
-                if leader is None and only_owned and self.collection_service is not None:
-                    requested = {"display_name": name, "card_type": "Leader"}
-                    owned_printing = self.collection_service.choose_owned_printing(requested)
-                    if owned_printing is not None:
-                        title, separator, subtitle = name.partition(" - ")
-                        leader = {
-                            "name": title,
-                            "subtitle": subtitle if separator else "",
-                            "display_name": name,
-                            "card_type": "Leader",
-                            "set_code": owned_printing.set_code,
-                            "number": owned_printing.card_number,
-                            "lookup_id": f"{owned_printing.set_code}/{owned_printing.card_number.zfill(3)}",
-                        }
-                if leader is None:
-                    unresolved.append(name)
-                    continue
-                if only_owned and self.collection_service is not None:
-                    owned_printing = self.collection_service.choose_owned_printing(leader)
-                    if owned_printing is None:
-                        unresolved.append(name)
-                        continue
-                    owned_card = self.card_service.catalog.lookup(
-                        owned_printing.set_code,
-                        owned_printing.card_number,
-                    )
-                    if owned_card is not None:
-                        leader = owned_card.to_dict()
-                leaders.append(leader)
-            if unresolved:
-                raise ValueError(
-                    "Could not resolve requested leader(s) as owned cards: "
-                    + ", ".join(unresolved)
-                )
+            leaders = self._resolve_requested_leaders(
+                leader_names=leader_names,
+                format_name=format_name,
+                only_owned=only_owned,
+            )
         else:
             result = self.card_service.search_cards(query=theme, filters={"type": "Leader"}, limit=25)
             leaders = []
@@ -2509,17 +2509,16 @@ class DeckService:
                     leaders.append(looked_up)
 
         if only_owned and self.collection_service is not None:
-            owned_leaders = [leader for leader in leaders if self._candidate_is_owned(leader)]
+            owned_leaders = [
+                owned_leader
+                for leader in leaders
+                if (owned_leader := self._resolve_owned_printing(leader)) is not None
+            ]
             if owned_leaders:
                 leaders = owned_leaders
 
         if format_name == PREMIER:
             return leaders[:1]
-
-        if format_name == TWIN_SUNS and leader_names and len(leaders) != TWIN_SUNS_LEADER_COUNT:
-            raise ValueError(
-                f"Twin Suns requires {TWIN_SUNS_LEADER_COUNT} requested leaders; resolved {len(leaders)}."
-            )
 
         for first in leaders:
             for second in leaders:
@@ -2532,6 +2531,35 @@ class DeckService:
                 if shared_alignment(candidate_pair):
                     return [first, second]
         return leaders[:2]
+
+    def _resolve_requested_leaders(
+        self,
+        *,
+        leader_names: list[str],
+        format_name: str,
+        only_owned: bool,
+    ) -> list[dict[str, Any]]:
+        leaders: list[dict[str, Any]] = []
+        unresolved: list[str] = []
+        for name in leader_names:
+            if only_owned and self.collection_service is not None:
+                leader = self._resolve_owned_printing({"display_name": name, "card_type": "Leader"})
+            else:
+                leader = self._resolve_leader_by_name(name)
+            if leader is None:
+                unresolved.append(name)
+                continue
+            leaders.append(leader)
+        if unresolved:
+            raise ValueError(
+                "Could not resolve requested leader(s) as owned cards: "
+                + ", ".join(unresolved)
+            )
+        if format_name == TWIN_SUNS and len(leaders) != TWIN_SUNS_LEADER_COUNT:
+            raise ValueError(
+                f"Twin Suns requires {TWIN_SUNS_LEADER_COUNT} requested leaders; resolved {len(leaders)}."
+            )
+        return leaders
 
     def _resolve_leader_by_name(self, name: str) -> dict[str, Any] | None:
         self.card_service._ensure_local_catalog()
@@ -2559,6 +2587,15 @@ class DeckService:
         only_owned: bool = False,
     ) -> dict[str, Any]:
         if base_name:
+            if only_owned and self.collection_service is not None:
+                base = self._resolve_owned_printing(
+                    {"display_name": base_name, "card_type": "Base"}
+                )
+                if base is None:
+                    raise ValueError(
+                        f"Could not resolve requested base as an owned card: {base_name}"
+                    )
+                return base
             return self.card_service.lookup_card(name=base_name)
 
         # Score each candidate base by aspect-pool *expansion* — the most
