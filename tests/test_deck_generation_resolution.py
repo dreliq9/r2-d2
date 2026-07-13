@@ -471,7 +471,28 @@ def test_candidate_discovery_fails_locally_without_live_search(tmp_path: Path) -
     service.card_service.search_cards = lambda **_: pytest.fail("candidate discovery used live search")  # type: ignore[method-assign]
 
     with pytest.raises(ValueError, match="No local candidate data"):
-        service._candidate_cards(goal_query="Force replay", available_aspects=set())
+        service._candidate_cards(goal_query="Force replay", available_aspects=set(), local_only=True)
+
+
+def test_suggestion_candidate_discovery_keeps_search_fallback() -> None:
+    service = DeckService(CardService())
+    fallback_card = {
+        "lookup_id": "LOF/020",
+        "set_code": "LOF",
+        "number": "020",
+        "name": "Rebel Pathfinder",
+        "display_name": "Rebel Pathfinder",
+        "card_type": "Unit",
+        "aspects": [],
+        "traits": [],
+        "keywords": [],
+        "front_text": "",
+    }
+    service.card_service.search_cards = lambda **_: {"cards": [fallback_card]}  # type: ignore[method-assign]
+
+    candidates = service._candidate_cards(goal_query="rebel", available_aspects=set())
+
+    assert candidates == [fallback_card]
 
 
 def test_twin_suns_validation_rejects_duplicate_canonical_leaders() -> None:

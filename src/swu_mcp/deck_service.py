@@ -1216,8 +1216,18 @@ class DeckService:
             return set(card.get("aspects") or []).issubset(legal_aspects)
 
         target_main_size = PREMIER_MAIN_DECK_MIN if normalized_format == PREMIER else TWIN_SUNS_MAIN_DECK_MIN
-        candidate_pool = self._candidate_cards(goal_query=compile_goal_query(theme), available_aspects=aspect_pool, only_owned=only_owned)
-        filler_pool = self._candidate_cards(goal_query="unit event", available_aspects=aspect_pool, only_owned=only_owned)
+        candidate_pool = self._candidate_cards(
+            goal_query=compile_goal_query(theme),
+            available_aspects=aspect_pool,
+            only_owned=only_owned,
+            local_only=True,
+        )
+        filler_pool = self._candidate_cards(
+            goal_query="unit event",
+            available_aspects=aspect_pool,
+            only_owned=only_owned,
+            local_only=True,
+        )
         merged_by_id: dict[str, dict[str, Any]] = {}
         for candidate in list(candidate_pool) + list(filler_pool):
             key = str(candidate.get("lookup_id") or f"{candidate.get('set_code')}-{candidate.get('number')}")
@@ -2460,41 +2470,88 @@ class DeckService:
         goal_query: str,
         available_aspects: set[str],
         only_owned: bool = False,
+        local_only: bool = False,
     ) -> list[dict[str, Any]]:
         restrict_to_owned = only_owned and self.collection_service is not None
         self.card_service._ensure_local_catalog()
-        if not self.card_service.catalog.is_available():
-            raise ValueError("No local candidate data available for generation.")
-        local_cards = [card.to_summary() for card in self.card_service.catalog.all_cards()]
-        goal_tokens = tokenize_text(goal_query)
-        ranked: list[tuple[tuple[int, int, int], dict[str, Any]]] = []
-        for card in local_cards:
-            if card["card_type"] in {"Leader", "Base"}:
-                continue
-            if restrict_to_owned:
-                owned_card = self._resolve_owned_printing(card)
-                if owned_card is None:
+        if self.card_service.catalog.is_available():
+            local_cards = [card.to_summary() for card in self.card_service.catalog.all_cards()]
+            goal_tokens = tokenize_text(goal_query)
+            ranked: list[tuple[tuple[int, int, int], dict[str, Any]]] = []
+            for card in local_cards:
+                if card["card_type"] in {"Leader", "Base"}:
                     continue
-                card = owned_card
-            searchable = " ".join(
-                [
-                    str(card.get("display_name", "")),
-                    str(card.get("front_text", "")),
-                    " ".join(card.get("traits", [])),
-                    " ".join(card.get("keywords", [])),
-                ]
-            ).lower()
-            token_hits = sum(1 for token in goal_tokens if token in searchable)
-            on_aspect = int(not (set(card.get("aspects", [])) - available_aspects))
-            type_bonus = 1 if card["card_type"] == "Unit" else 0
-            if goal_tokens and token_hits == 0 and on_aspect == 0 and not restrict_to_owned:
-                continue
-            ranked.append(((on_aspect, token_hits, type_bonus), card))
+                if restrict_to_owned:
+                    owned_card = self._resolve_owned_printing(card)
+                    if owned_card is None:
+                        continue
+                    card = owned_card
+                searchable = " ".join(
+                    [
+                        str(card.get("display_name", "")),
+                        str(card.get("front_text", "")),
+                        " ".join(card.get("traits", [])),
+                        " ".join(card.get("keywords", [])),
+                    ]
+                ).lower()
+                token_hits = sum(1 for token in goal_tokens if token in searchable)
+                on_aspect = int(not (set(card.get("aspects", [])) - available_aspects))
+                type_bonus = 1 if card["card_type"] == "Unit" else 0
+                if goal_tokens and token_hits == 0 and on_aspect == 0 and not restrict_to_owned:
+                    continue
+                ranked.append(((on_aspect, token_hits, type_bonus), card))
 
-        ranked.sort(key=lambda item: item[0], reverse=True)
-        if not ranked:
+            ranked.sort(key=lambda item: item[0], reverse=True)
+            if ranked:
+                return [card for _, card in ranked[:500]]
+
+        if local_only:
             raise ValueError("No local candidate data available for generation.")
-        return [card for _, card in ranked[:500]]
+
+        pools: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        queries = [goal_query] if goal_query and goal_query != "*" else ["unit event"]
+        for aspect in sorted(available_aspects)[:2]:
+            queries.append(goal_query)
+            try:
+                result = self.card_service.search_cards(
+                    query=goal_query or "*", filters={"aspect": aspect}, limit=40
+                )
+            except Exception:
+                continue
+            for card in result["cards"]:
+                if restrict_to_owned:
+                    card = self._resolve_owned_printing(card)
+                    if card is None:
+                        continue
+                if card["lookup_id"] not in seen:
+                    pools.append(card)
+                    seen.add(card["lookup_id"])
+
+        for query in queries[:2]:
+            try:
+                result = self.card_service.search_cards(query=query or "*", limit=40)
+            except Exception:
+                continue
+            for card in result["cards"]:
+                if restrict_to_owned:
+                    card = self._resolve_owned_printing(card)
+                    if card is None:
+                        continue
+                if card["lookup_id"] not in seen:
+                    pools.append(card)
+                    seen.add(card["lookup_id"])
+        if not pools:
+            fallback = self.card_service.search_cards(query="unit event", limit=60)
+            for card in fallback["cards"]:
+                if restrict_to_owned:
+                    card = self._resolve_owned_printing(card)
+                    if card is None:
+                        continue
+                if card["lookup_id"] not in seen:
+                    pools.append(card)
+                    seen.add(card["lookup_id"])
+        return pools
 
     def _pick_leaders(
         self,
