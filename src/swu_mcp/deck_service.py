@@ -1622,6 +1622,8 @@ class DeckService:
         max_iterations: int = 20,
     ) -> dict[str, Any]:
         parsed = self.resolve_deck(self.parse_decklist(decklist=decklist, format_name=format_name))
+        if only_owned:
+            parsed = self._resolve_owned_deck(parsed)
         leaders = [entry.card for entry in parsed.leaders if entry.card]
         base = parsed.bases[0].card if parsed.bases and parsed.bases[0].card else None
         thesis = build_deck_thesis(theme=theme, leaders=leaders, base=base, format_name=parsed.format_name)
@@ -1629,6 +1631,7 @@ class DeckService:
             goal_query=compile_goal_query(theme),
             available_aspects=collect_deck_aspects(parsed),
             only_owned=only_owned,
+            local_only=True,
         )
         from .card_roles import build_role_pools
         from .deck_optimizer import optimize_card_list
@@ -1652,6 +1655,30 @@ class DeckService:
                 for swap in result.swaps
             ],
         }
+
+    def _resolve_owned_deck(self, parsed: ParsedDeck) -> ParsedDeck:
+        if self.collection_service is None:
+            raise ValueError("only_owned=True requires an active collection.")
+
+        resolved = ParsedDeck(format_name=parsed.format_name, title=parsed.title)
+        for zone_name in ("leaders", "bases", "main_deck", "sideboard"):
+            for entry in getattr(parsed, zone_name):
+                if entry.card is None:
+                    raise ValueError(f"Could not resolve deck card: {entry.display_name}")
+                owned_card = self._resolve_owned_printing(entry.card)
+                if owned_card is None:
+                    raise ValueError(f"Deck contains unowned card: {entry.display_name}")
+                getattr(resolved, zone_name).append(
+                    DeckCardEntry(
+                        quantity=entry.quantity,
+                        name=str(owned_card.get("display_name") or owned_card.get("name") or entry.name),
+                        zone=zone_name,
+                        set_code=str(owned_card["set_code"]),
+                        card_number=str(owned_card["number"]),
+                        card=owned_card,
+                    )
+                )
+        return collapse_entries(resolved)
 
     def rank_leader_pairs(
         self,
