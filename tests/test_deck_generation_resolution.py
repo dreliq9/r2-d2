@@ -4,9 +4,10 @@ from pathlib import Path
 import pytest
 
 from swu_mcp.card_service import CardService
+from swu_mcp.card_identity import canonical_key
 from swu_mcp.catalog import LocalCatalog
 from swu_mcp.collection_service import CollectionService
-from swu_mcp.deck_service import DeckService, TWIN_SUNS
+from swu_mcp.deck_service import DeckCardEntry, DeckService, ParsedDeck, TWIN_SUNS
 
 
 def _collection(path: Path, entries: list[dict[str, object]] | None = None) -> CollectionService:
@@ -326,3 +327,49 @@ def test_requested_twin_suns_duplicate_leaders_fail_loudly(tmp_path: Path) -> No
             ],
             only_owned=True,
         )
+
+
+def test_automatic_twin_suns_leaders_are_canonically_distinct(tmp_path: Path) -> None:
+    service = DeckService(CardService())
+    service.card_service.catalog = _local_catalog(
+        tmp_path / "cards.json",
+        [
+            {"Set": "LOF", "Number": "016", "Name": "Qui-Gon Jinn", "Type": "Leader", "Aspects": ["Vigilance"]},
+            {"Set": "SOR", "Number": "001", "Name": "Qui-Gon Jinn", "Type": "Leader", "Aspects": ["Vigilance"]},
+            {"Set": "LOF", "Number": "007", "Name": "Avar Kriss", "Type": "Leader", "Aspects": ["Vigilance"]},
+        ],
+    )
+
+    leaders = service._pick_leaders(theme="Force replay", format_name=TWIN_SUNS, leader_names=None)
+
+    assert len({canonical_key(leader) for leader in leaders}) == 2
+
+
+def test_candidate_discovery_fails_locally_without_live_search(tmp_path: Path) -> None:
+    service = DeckService(CardService())
+    service.card_service.catalog = _local_catalog(tmp_path / "cards.json", [])
+    service.card_service.search_cards = lambda **_: pytest.fail("candidate discovery used live search")  # type: ignore[method-assign]
+
+    with pytest.raises(ValueError, match="No local candidate data"):
+        service._candidate_cards(goal_query="Force replay", available_aspects=set())
+
+
+def test_twin_suns_validation_rejects_duplicate_canonical_leaders() -> None:
+    duplicate = {
+        "name": "Qui-Gon Jinn",
+        "display_name": "Qui-Gon Jinn",
+        "card_type": "Leader",
+        "set_code": "LOF",
+        "number": "016",
+    }
+    parsed = ParsedDeck(
+        format_name=TWIN_SUNS,
+        leaders=[
+            DeckCardEntry(quantity=1, name="Qui-Gon Jinn", zone="leaders", card=duplicate),
+            DeckCardEntry(quantity=1, name="Qui-Gon Jinn", zone="leaders", card={**duplicate, "set_code": "SOR", "number": "001"}),
+        ],
+    )
+
+    validation = DeckService(CardService()).validate_parsed_deck(parsed)
+
+    assert "Twin Suns requires two distinct canonical leaders." in validation["errors"]

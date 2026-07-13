@@ -2102,6 +2102,13 @@ class DeckService:
         else:
             if leader_count != TWIN_SUNS_LEADER_COUNT:
                 errors.append(f"Twin Suns requires exactly 2 leaders, found {leader_count}.")
+            elif len(
+                {
+                    canonical_key(entry.card or {"display_name": entry.name, "card_type": "Leader"})
+                    for entry in deck.leaders
+                }
+            ) != TWIN_SUNS_LEADER_COUNT:
+                errors.append("Twin Suns requires two distinct canonical leaders.")
             if base_count != 1:
                 errors.append(f"Twin Suns requires exactly 1 base, found {base_count}.")
             if main_size < TWIN_SUNS_MAIN_DECK_MIN:
@@ -2427,80 +2434,39 @@ class DeckService:
         only_owned: bool = False,
     ) -> list[dict[str, Any]]:
         restrict_to_owned = only_owned and self.collection_service is not None
-        if self.card_service.catalog.is_available():
-            local_cards = [card.to_summary() for card in self.card_service.catalog.all_cards()]
-            goal_tokens = tokenize_text(goal_query)
-            ranked: list[tuple[tuple[int, int, int], dict[str, Any]]] = []
-            for card in local_cards:
-                if card["card_type"] in {"Leader", "Base"}:
-                    continue
-                if restrict_to_owned:
-                    owned_card = self._resolve_owned_printing(card)
-                    if owned_card is None:
-                        continue
-                    card = owned_card
-                searchable = " ".join(
-                    [
-                        str(card.get("display_name", "")),
-                        str(card.get("front_text", "")),
-                        " ".join(card.get("traits", [])),
-                        " ".join(card.get("keywords", [])),
-                    ]
-                ).lower()
-                token_hits = sum(1 for token in goal_tokens if token in searchable)
-                on_aspect = int(not (set(card.get("aspects", [])) - available_aspects))
-                type_bonus = 1 if card["card_type"] == "Unit" else 0
-                if goal_tokens and token_hits == 0 and on_aspect == 0 and not restrict_to_owned:
-                    continue
-                ranked.append(((on_aspect, token_hits, type_bonus), card))
-
-            ranked.sort(key=lambda item: item[0], reverse=True)
-            if ranked:
-                return [card for _, card in ranked[:500]]
-
-        pools: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        queries = [goal_query] if goal_query and goal_query != "*" else ["unit event"]
-        aspect_queries = sorted(available_aspects)
-        for aspect in aspect_queries[:2]:
-            queries.append(goal_query)
-            try:
-                result = self.card_service.search_cards(query=goal_query or "*", filters={"aspect": aspect}, limit=40)
-            except Exception:
+        self.card_service._ensure_local_catalog()
+        if not self.card_service.catalog.is_available():
+            raise ValueError("No local candidate data available for generation.")
+        local_cards = [card.to_summary() for card in self.card_service.catalog.all_cards()]
+        goal_tokens = tokenize_text(goal_query)
+        ranked: list[tuple[tuple[int, int, int], dict[str, Any]]] = []
+        for card in local_cards:
+            if card["card_type"] in {"Leader", "Base"}:
                 continue
-            for card in result["cards"]:
-                if restrict_to_owned:
-                    card = self._resolve_owned_printing(card)
-                    if card is None:
-                        continue
-                if card["lookup_id"] not in seen:
-                    pools.append(card)
-                    seen.add(card["lookup_id"])
-
-        for query in queries[:2]:
-            try:
-                result = self.card_service.search_cards(query=query or "*", limit=40)
-            except Exception:
+            if restrict_to_owned:
+                owned_card = self._resolve_owned_printing(card)
+                if owned_card is None:
+                    continue
+                card = owned_card
+            searchable = " ".join(
+                [
+                    str(card.get("display_name", "")),
+                    str(card.get("front_text", "")),
+                    " ".join(card.get("traits", [])),
+                    " ".join(card.get("keywords", [])),
+                ]
+            ).lower()
+            token_hits = sum(1 for token in goal_tokens if token in searchable)
+            on_aspect = int(not (set(card.get("aspects", [])) - available_aspects))
+            type_bonus = 1 if card["card_type"] == "Unit" else 0
+            if goal_tokens and token_hits == 0 and on_aspect == 0 and not restrict_to_owned:
                 continue
-            for card in result["cards"]:
-                if restrict_to_owned:
-                    card = self._resolve_owned_printing(card)
-                    if card is None:
-                        continue
-                if card["lookup_id"] not in seen:
-                    pools.append(card)
-                    seen.add(card["lookup_id"])
-        if not pools:
-            fallback = self.card_service.search_cards(query="unit event", limit=60)
-            for card in fallback["cards"]:
-                if restrict_to_owned:
-                    card = self._resolve_owned_printing(card)
-                    if card is None:
-                        continue
-                if card["lookup_id"] not in seen:
-                    pools.append(card)
-                    seen.add(card["lookup_id"])
-        return pools
+            ranked.append(((on_aspect, token_hits, type_bonus), card))
+
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        if not ranked:
+            raise ValueError("No local candidate data available for generation.")
+        return [card for _, card in ranked[:500]]
 
     def _pick_leaders(
         self,
@@ -2548,8 +2514,21 @@ class DeckService:
                 raise ValueError("Could not resolve owned leader for automatic selection.")
             leaders = owned_leaders
 
+        unique_leaders: list[dict[str, Any]] = []
+        seen_leaders: set = set()
+        for leader in leaders:
+            identity = canonical_key(leader)
+            if identity in seen_leaders:
+                continue
+            seen_leaders.add(identity)
+            unique_leaders.append(leader)
+        leaders = unique_leaders
+
         if format_name == PREMIER:
             return leaders[:1]
+
+        if len(leaders) < TWIN_SUNS_LEADER_COUNT:
+            raise ValueError("Twin Suns requires two distinct canonical leaders.")
 
         for first in leaders:
             for second in leaders:
