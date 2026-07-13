@@ -2956,7 +2956,11 @@ def detect_roles(card: dict[str, Any]) -> list[str]:
     from .card_roles import roles_for_card
 
     thesis = build_deck_thesis("", [], None, PREMIER)
-    return list(roles_for_card(card, thesis).roles)
+    profile_roles = set(roles_for_card(card, thesis).roles)
+    roles = [role for role in ROLE_PATTERNS if role in profile_roles]
+    if "board_presence" in profile_roles:
+        roles.append("board_presence")
+    return roles
 
 
 def build_style_notes(

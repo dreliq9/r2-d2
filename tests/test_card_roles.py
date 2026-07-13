@@ -1,6 +1,6 @@
 from swu_mcp.card_roles import build_role_pools, roles_for_card
 from swu_mcp.deck_thesis import build_deck_thesis
-from swu_mcp.deck_service import TWIN_SUNS
+from swu_mcp.deck_service import TWIN_SUNS, detect_roles
 
 
 def _thesis():
@@ -68,3 +68,37 @@ def test_role_pools_group_cards_by_role() -> None:
 
     assert "Upgrade" in [card["display_name"] for card in pools["upgrade"]]
     assert "Carrier" in [card["display_name"] for card in pools["upgrade_carrier"]]
+
+
+def test_legacy_detect_roles_excludes_deckbuilding_only_roles() -> None:
+    roles = detect_roles(
+        {
+            "display_name": "Test Carrier",
+            "card_type": "Unit",
+            "front_text": "",
+            "cost": 2,
+            "hp": 4,
+            "keywords": ["Sentinel"],
+            "arenas": ["Ground"],
+        }
+    )
+
+    assert set(roles) <= {"removal", "base_pressure", "card_advantage", "defense", "tempo", "board_presence"}
+    assert "board_presence" in roles
+    assert "early_unit" not in roles
+    assert "upgrade_carrier" not in roles
+    assert "defensive_stabilizer" not in roles
+
+
+def test_zero_cost_unit_gets_early_unit_role() -> None:
+    profile = roles_for_card(
+        {
+            "display_name": "Zero Cost Unit",
+            "card_type": "Unit",
+            "front_text": "",
+            "cost": 0,
+        },
+        _thesis(),
+    )
+
+    assert "early_unit" in profile.roles

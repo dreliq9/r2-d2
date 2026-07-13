@@ -26,7 +26,7 @@ def roles_for_card(card: dict[str, Any], thesis: DeckThesis) -> CardRoleProfile:
     scores: dict[str, float] = {}
     reasons: list[str] = []
     ctype = str(card.get("card_type") or card.get("Type") or "")
-    cost = parse_int(card.get("cost") or card.get("Cost"))
+    cost = parse_int(card.get("cost") if card.get("cost") is not None else card.get("Cost"))
     text = _text(card)
     keywords = set(card.get("keywords") or card.get("Keywords") or [])
     arenas = set(card.get("arenas") or card.get("Arenas") or [])
