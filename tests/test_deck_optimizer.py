@@ -278,3 +278,39 @@ def test_optimize_deck_only_owned_rejects_initial_deck_exceeding_owned_canonical
             only_owned=True,
             max_iterations=0,
         )
+
+
+def test_owned_counts_by_canonical_key_merges_catalog_and_metadata_printings(tmp_path: Path) -> None:
+    service = DeckService(
+        CardService(),
+        collection_service=CollectionService(tmp_path / "collection.json"),
+    )
+    catalog_printing = _unit("Mixed Source Unit", number=40)
+    identity = canonical_key(catalog_printing)
+    service._owned_catalog_cards = lambda: [(catalog_printing, 1)]  # type: ignore[method-assign]
+    service.collection_service.owned_canonical_index = lambda: {  # type: ignore[method-assign]
+        identity: [
+            type(
+                "Printing",
+                (),
+                {
+                    "set_code": "TST",
+                    "card_number": "040",
+                    "count": 1,
+                },
+            )(),
+            type(
+                "Printing",
+                (),
+                {
+                    "set_code": "TST",
+                    "card_number": "041",
+                    "count": 2,
+                },
+            )(),
+        ]
+    }
+
+    counts = service._owned_counts_by_canonical_key()
+
+    assert counts[identity] == 3

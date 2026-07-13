@@ -1759,11 +1759,26 @@ class DeckService:
         if self.collection_service is None:
             return counts
 
+        seen_printings: set[tuple[str, str]] = set()
         for owned_card, count in self._owned_catalog_cards():
             counts[canonical_key(owned_card)] += count
+            if owned_card.get("set_code") is not None and owned_card.get("number") is not None:
+                seen_printings.add(
+                    (
+                        str(owned_card["set_code"]).upper().strip(),
+                        normalize_lookup_number(str(owned_card["number"])),
+                    )
+                )
         for identity, printings in self.collection_service.owned_canonical_index().items():
-            if identity not in counts:
-                counts[identity] = sum(printing.count for printing in printings)
+            for printing in printings:
+                printing_key = (
+                    printing.set_code.upper().strip(),
+                    normalize_lookup_number(printing.card_number),
+                )
+                if printing_key in seen_printings:
+                    continue
+                counts[identity] += printing.count
+                seen_printings.add(printing_key)
         return counts
 
     def _resolve_owned_deck(self, parsed: ParsedDeck) -> ParsedDeck:
