@@ -41,3 +41,27 @@ def test_vehicle_theme_sets_vehicle_roles_without_forcing_upgrade_engine() -> No
     assert "pilot_vehicle" in thesis.target_packages
     assert thesis.role_targets["engine_enabler"].minimum >= 8
     assert thesis.role_targets["upgrade"].minimum < 14
+
+
+def test_build_deck_thesis_accepts_the_specified_positional_signature() -> None:
+    thesis = build_deck_thesis(
+        "vehicle pilot",
+        [],
+        None,
+        TWIN_SUNS,
+    )
+
+    assert thesis.format_name == TWIN_SUNS
+
+
+def test_unknown_theme_keeps_baseline_heuristic_targets() -> None:
+    thesis = build_deck_thesis(
+        theme="unrecognized archetype",
+        leaders=[],
+        base=None,
+        format_name=TWIN_SUNS,
+    )
+
+    assert thesis.role_targets
+    assert thesis.role_targets["early_unit"].minimum > 0
+    assert not thesis.target_packages

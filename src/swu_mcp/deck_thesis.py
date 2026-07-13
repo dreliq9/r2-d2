@@ -103,7 +103,6 @@ def _target(minimum: int, ideal: int, maximum: int) -> RoleTarget:
 
 
 def build_deck_thesis(
-    *,
     theme: str,
     leaders: list[dict[str, Any]],
     base: dict[str, Any] | None,
