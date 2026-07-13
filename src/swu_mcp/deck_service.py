@@ -2623,6 +2623,16 @@ class DeckService:
 
         if only_owned and self.collection_service is not None:
             owned_bases = self._owned_cards_of_type("Base")
+            resolved_lookup_ids = {str(base.get("lookup_id", "")) for base in owned_bases}
+            self.collection_service._load_from_disk()
+            for entry in self.collection_service._entries.values():
+                if entry.count <= 0:
+                    continue
+                card = self.card_service.catalog.lookup(entry.set_code, entry.card_number)
+                if card is None or card.card_type != "Base" or card.lookup_id in resolved_lookup_ids:
+                    continue
+                owned_bases.append(card.to_dict())
+                resolved_lookup_ids.add(card.lookup_id)
             if owned_bases:
                 owned_bases.sort(key=_score_base, reverse=True)
                 return owned_bases[0]

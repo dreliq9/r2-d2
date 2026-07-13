@@ -342,6 +342,34 @@ def test_automatic_owned_base_uses_local_catalog_when_cache_is_missing(tmp_path:
     assert base["lookup_id"] == "LOF/010"
 
 
+def test_automatic_owned_base_resolves_bare_collection_entry_from_local_catalog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = DeckService(
+        CardService(),
+        collection_service=_collection(
+            tmp_path / "collection.json",
+            entries=[
+                {
+                    "set_code": "LOF",
+                    "card_number": "010",
+                    "count": 1,
+                    "foil_count": 0,
+                }
+            ],
+        ),
+    )
+    service.card_service.catalog = _local_catalog(
+        tmp_path / "cards.json",
+        [{"Set": "LOF", "Number": "010", "Name": "Echo Base", "Type": "Base", "HP": "30"}],
+    )
+    monkeypatch.setattr("swu_mcp.collection_service._read_card_cache", lambda *_: None)
+
+    base = service._pick_base(base_name=None, aspect_pool=set(), only_owned=True)
+
+    assert base["lookup_id"] == "LOF/010"
+
+
 def test_requested_twin_suns_duplicate_leaders_fail_loudly(tmp_path: Path) -> None:
     service = DeckService(CardService(), collection_service=_collection(tmp_path / "collection.json"))
 
