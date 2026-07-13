@@ -52,7 +52,7 @@ def evaluate_deck_cards(cards: list[dict[str, Any]], thesis: DeckThesis) -> Deck
     role_scores = [
         _pct(role_counts.get(role, 0), target.minimum)
         for role, target in thesis.role_targets.items()
-        if target.minimum > 0 and role_counts.get(role, 0) > 0
+        if target.minimum > 0
     ]
     role_coverage = sum(role_scores) / len(role_scores) if role_scores else 100.0
 
