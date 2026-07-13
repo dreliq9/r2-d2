@@ -348,6 +348,60 @@ def swu_generate_deck(
     )
 
 
+@mcp.tool(description="List known Star Wars Unlimited archetype records supported by the deckbuilder.")
+def swu_known_archetypes() -> dict:
+    from .archetypes import known_archetypes
+
+    archetypes = known_archetypes()
+    return {
+        "count": len(archetypes),
+        "archetypes": [
+            {
+                "archetype_id": archetype.archetype_id,
+                "format": archetype.format_name,
+                "name": archetype.name,
+                "description": archetype.description,
+                "signature_cards": list(archetype.signature_cards),
+                "package_targets": list(archetype.package_targets),
+                "last_reviewed": archetype.last_reviewed,
+            }
+            for archetype in archetypes
+        ],
+    }
+
+
+@mcp.tool(description="Optimize an uploaded or supplied decklist through evaluator-backed local swaps.")
+def swu_optimize_deck(
+    decklist: str,
+    theme: str,
+    format_name: str = "premier",
+    only_owned: bool = False,
+    max_iterations: int = 20,
+) -> dict:
+    return deck_service.optimize_deck(
+        decklist=decklist,
+        theme=theme,
+        format_name=format_name,
+        only_owned=only_owned,
+        max_iterations=max_iterations,
+    )
+
+
+@mcp.tool(description="Run a seeded goldfish report for a decklist.")
+def swu_run_deck_goldfish(
+    decklist: str,
+    format_name: str = "premier",
+    games: int = 20,
+    seed: int = 1,
+) -> dict:
+    return deck_service.goldfish_deck_report(
+        decklist=decklist,
+        format_name=format_name,
+        games=games,
+        seed=seed,
+    )
+
+
 @mcp.tool(description=(
     "Twin Suns only — brew a deck for every legal leader pairing in your "
     "owned pool and rank them by composite score (synergy + interaction "
