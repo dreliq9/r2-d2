@@ -1,7 +1,9 @@
+from collections import Counter
 from pathlib import Path
 
 import pytest
 
+from swu_mcp.card_identity import canonical_key
 from swu_mcp.card_service import CardService
 from swu_mcp.catalog import LocalCatalog
 from swu_mcp.collection_service import CollectionService
@@ -147,6 +149,10 @@ def _premier_shell(main_deck: list[DeckCardEntry]) -> ParsedDeck:
     )
 
 
+def _owned_counts_for(entries: list[DeckCardEntry], *, default: int = 4) -> Counter:
+    return Counter({canonical_key(entry.card): default for entry in entries if entry.card})
+
+
 def test_optimize_deck_rejects_illegal_canonical_duplicate_swap() -> None:
     service = DeckService(CardService())
     existing = _unit(
@@ -224,7 +230,16 @@ def test_optimize_deck_only_owned_rejects_swap_exceeding_owned_canonical_quantit
     service.resolve_deck = lambda _parsed: parsed  # type: ignore[method-assign]
     service._resolve_owned_printing = lambda card: card  # type: ignore[method-assign]
     service._candidate_cards = lambda **_kwargs: [illegal_candidate]  # type: ignore[method-assign]
-    service._candidate_owned_count = lambda _card: 1  # type: ignore[method-assign]
+    owned_count_calls = 0
+
+    def owned_counts() -> Counter:
+        nonlocal owned_count_calls
+        owned_count_calls += 1
+        counts = _owned_counts_for(parsed.main_deck)
+        counts[canonical_key(owned_card)] = 1
+        return counts
+
+    service._owned_counts_by_canonical_key = owned_counts  # type: ignore[method-assign]
 
     result = service.optimize_deck(
         decklist={"main_deck": []},
@@ -235,6 +250,7 @@ def test_optimize_deck_only_owned_rejects_swap_exceeding_owned_canonical_quantit
 
     assert result["swaps"] == []
     assert result["final_score"] == result["initial_score"]
+    assert owned_count_calls == 1
 
 
 def test_optimize_deck_only_owned_rejects_initial_deck_exceeding_owned_canonical_quantity(tmp_path: Path) -> None:
@@ -250,7 +266,9 @@ def test_optimize_deck_only_owned_rejects_initial_deck_exceeding_owned_canonical
     ])
     service.resolve_deck = lambda _parsed: parsed  # type: ignore[method-assign]
     service._resolve_owned_printing = lambda card: card  # type: ignore[method-assign]
-    service._candidate_owned_count = lambda card: 1 if card["display_name"] == "Owned Limit Unit" else 4  # type: ignore[method-assign]
+    counts = _owned_counts_for(parsed.main_deck)
+    counts[canonical_key(owned_card)] = 1
+    service._owned_counts_by_canonical_key = lambda: counts  # type: ignore[method-assign]
     service._candidate_cards = lambda **_kwargs: pytest.fail("optimizer searched candidates before owned quantity check")  # type: ignore[method-assign]
 
     with pytest.raises(ValueError, match="Deck exceeds owned card quantities"):

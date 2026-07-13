@@ -1640,9 +1640,11 @@ class DeckService:
         max_iterations: int = 20,
     ) -> dict[str, Any]:
         parsed = self.resolve_deck(self.parse_decklist(decklist=decklist, format_name=format_name))
+        owned_counts: Counter | None = None
         if only_owned:
             parsed = self._resolve_owned_deck(parsed)
-            self._require_owned_quantities_available(parsed)
+            owned_counts = self._owned_counts_by_canonical_key()
+            self._require_owned_quantities_available(parsed, owned_counts=owned_counts)
         leaders = [entry.card for entry in parsed.leaders if entry.card]
         base = parsed.bases[0].card if parsed.bases and parsed.bases[0].card else None
         thesis = build_deck_thesis(theme=theme, leaders=leaders, base=base, format_name=parsed.format_name)
@@ -1679,7 +1681,11 @@ class DeckService:
             )
             if not self.validate_parsed_deck(trial_deck)["legal"]:
                 return False
-            if only_owned and not self._trial_owned_quantities_available(trial_cards, parsed):
+            if only_owned and not self._trial_owned_quantities_available(
+                trial_cards,
+                parsed,
+                owned_counts=owned_counts,
+            ):
                 return False
             return True
 
@@ -1708,19 +1714,25 @@ class DeckService:
         self,
         trial_main_cards: list[dict[str, Any]],
         parsed: ParsedDeck,
+        *,
+        owned_counts: Counter | None = None,
     ) -> bool:
         required: Counter = Counter()
-        representative: dict[Any, dict[str, Any]] = {}
         for card in trial_main_cards + expand_entries(parsed.sideboard):
             identity = canonical_key(card)
             required[identity] += 1
-            representative.setdefault(identity, card)
+        available_counts = owned_counts if owned_counts is not None else self._owned_counts_by_canonical_key()
         return all(
-            self._candidate_owned_count(representative[identity]) >= quantity
+            available_counts.get(identity, 0) >= quantity
             for identity, quantity in required.items()
         )
 
-    def _require_owned_quantities_available(self, parsed: ParsedDeck) -> None:
+    def _require_owned_quantities_available(
+        self,
+        parsed: ParsedDeck,
+        *,
+        owned_counts: Counter | None = None,
+    ) -> None:
         required: Counter = Counter()
         representative: dict[Any, dict[str, Any]] = {}
         for card in expand_entries(parsed.main_deck + parsed.sideboard):
@@ -1728,9 +1740,10 @@ class DeckService:
             required[identity] += 1
             representative.setdefault(identity, card)
 
+        available_counts = owned_counts if owned_counts is not None else self._owned_counts_by_canonical_key()
         over_limit: list[str] = []
         for identity, quantity in sorted(required.items()):
-            owned_quantity = self._candidate_owned_count(representative[identity])
+            owned_quantity = available_counts.get(identity, 0)
             if owned_quantity < quantity:
                 name = str(
                     representative[identity].get("display_name")
@@ -1740,6 +1753,18 @@ class DeckService:
                 over_limit.append(f"{name} requires {quantity} copies, but only {owned_quantity} owned.")
         if over_limit:
             raise ValueError("Deck exceeds owned card quantities: " + "; ".join(over_limit))
+
+    def _owned_counts_by_canonical_key(self) -> Counter:
+        counts: Counter = Counter()
+        if self.collection_service is None:
+            return counts
+
+        for owned_card, count in self._owned_catalog_cards():
+            counts[canonical_key(owned_card)] += count
+        for identity, printings in self.collection_service.owned_canonical_index().items():
+            if identity not in counts:
+                counts[identity] = sum(printing.count for printing in printings)
+        return counts
 
     def _resolve_owned_deck(self, parsed: ParsedDeck) -> ParsedDeck:
         if self.collection_service is None:
