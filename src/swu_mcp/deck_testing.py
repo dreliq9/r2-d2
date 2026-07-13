@@ -22,6 +22,8 @@ def goldfish_deck(
     games: int = 20,
     seed: int = 1,
 ) -> GoldfishReport:
+    if games < 1:
+        raise ValueError("games must be at least 1")
     deck_service.card_service._ensure_local_catalog()
     if not deck_service.card_service.catalog.is_available():
         raise RuntimeError("Goldfish reports require a local card catalog.")
@@ -30,6 +32,9 @@ def goldfish_deck(
     unresolved_entries = 0
     for entry in parsed.main_deck:
         card = entry.card
+        if card is None and entry.set_code and entry.card_number:
+            local_card = deck_service.card_service.catalog.lookup(entry.set_code, entry.card_number)
+            card = local_card.to_dict() if local_card else None
         if card is None:
             local_card = deck_service.card_service.catalog.lookup_by_name(
                 entry.name,
@@ -55,7 +60,7 @@ def goldfish_deck(
         "Current simulator does not fully model every nested optional trigger.",
     )
     if unresolved_entries:
-        limitations += ("Unresolved main-deck entries are excluded from this local-only report.",)
+        limitations += ("Unresolved main-deck entries remain in the sampled library as unknown-cost cards.",)
 
     return GoldfishReport(
         games=games,
