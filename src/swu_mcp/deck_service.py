@@ -495,14 +495,7 @@ class DeckService:
     def _candidate_owned_count(self, candidate: dict[str, Any]) -> int:
         if self.collection_service is None:
             return 0
-        catalog_count = sum(
-            count
-            for owned_card, count in self._owned_catalog_cards()
-            if canonical_key(owned_card) == canonical_key(candidate)
-        )
-        if catalog_count:
-            return catalog_count
-        return self.collection_service.owned_canonical_count(candidate)
+        return self._owned_counts_by_canonical_key().get(canonical_key(candidate), 0)
 
     def _owned_catalog_cards(self) -> list[tuple[dict[str, Any], int]]:
         if self.collection_service is None:

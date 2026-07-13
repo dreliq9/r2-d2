@@ -314,3 +314,4 @@ def test_owned_counts_by_canonical_key_merges_catalog_and_metadata_printings(tmp
     counts = service._owned_counts_by_canonical_key()
 
     assert counts[identity] == 3
+    assert service._candidate_owned_count(catalog_printing) == 3
