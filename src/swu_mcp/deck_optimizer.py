@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from .deck_evaluator import evaluate_deck_cards
 from .deck_thesis import DeckThesis
@@ -33,6 +33,7 @@ def optimize_card_list(
     thesis: DeckThesis,
     *,
     max_iterations: int = 20,
+    validation_callback: Callable[[list[dict[str, Any]]], bool] | None = None,
 ) -> OptimizationResult:
     current = list(cards)
     initial = evaluate_deck_cards(current, thesis)
@@ -48,6 +49,8 @@ def optimize_card_list(
                 continue
             for idx, existing in enumerate(current):
                 trial = current[:idx] + [candidate] + current[idx + 1 :]
+                if validation_callback is not None and not validation_callback(trial):
+                    continue
                 trial_score = evaluate_deck_cards(trial, thesis).total_score
                 delta = trial_score - current_score
                 if delta > 0 and (best_swap is None or delta > best_swap[0]):

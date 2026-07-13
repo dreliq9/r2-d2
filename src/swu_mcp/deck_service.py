@@ -1654,11 +1654,40 @@ class DeckService:
         from .card_roles import build_role_pools
         from .deck_optimizer import optimize_card_list
 
+        def trial_is_legal(trial_cards: list[dict[str, Any]]) -> bool:
+            trial_entries = [
+                DeckCardEntry(
+                    quantity=1,
+                    name=str(card.get("display_name") or card.get("name") or card.get("Name") or ""),
+                    zone="main_deck",
+                    set_code=str(card["set_code"]) if card.get("set_code") is not None else None,
+                    card_number=str(card["number"]) if card.get("number") is not None else None,
+                    card=card,
+                )
+                for card in trial_cards
+            ]
+            trial_deck = collapse_entries(
+                ParsedDeck(
+                    format_name=parsed.format_name,
+                    title=parsed.title,
+                    leaders=list(parsed.leaders),
+                    bases=list(parsed.bases),
+                    main_deck=trial_entries,
+                    sideboard=list(parsed.sideboard),
+                )
+            )
+            if not self.validate_parsed_deck(trial_deck)["legal"]:
+                return False
+            if only_owned and not self._trial_owned_quantities_available(trial_cards, parsed):
+                return False
+            return True
+
         result = optimize_card_list(
             expand_entries(parsed.main_deck),
             build_role_pools(pool, thesis),
             thesis,
             max_iterations=max_iterations,
+            validation_callback=trial_is_legal,
         )
         return {
             "initial_score": result.initial_score,
@@ -1673,6 +1702,22 @@ class DeckService:
                 for swap in result.swaps
             ],
         }
+
+    def _trial_owned_quantities_available(
+        self,
+        trial_main_cards: list[dict[str, Any]],
+        parsed: ParsedDeck,
+    ) -> bool:
+        required: Counter = Counter()
+        representative: dict[Any, dict[str, Any]] = {}
+        for card in trial_main_cards + expand_entries(parsed.sideboard):
+            identity = canonical_key(card)
+            required[identity] += 1
+            representative.setdefault(identity, card)
+        return all(
+            self._candidate_owned_count(representative[identity]) >= quantity
+            for identity, quantity in required.items()
+        )
 
     def _resolve_owned_deck(self, parsed: ParsedDeck) -> ParsedDeck:
         if self.collection_service is None:
@@ -2237,17 +2282,21 @@ class DeckService:
 
         main_counts = entry_quantity_by_name(deck.main_deck)
         sideboard_counts = entry_quantity_by_name(deck.sideboard)
-        combined_counts = entry_quantity_by_name(deck.main_deck + deck.sideboard)
+        combined_counts = entry_quantity_by_canonical_key(deck.main_deck + deck.sideboard)
         copy_limit = 1 if deck.format_name == TWIN_SUNS else PREMIER_COPY_LIMIT
         # Per-card overrides come from card text like "A deck can have up to N copies of this card."
-        card_by_name: dict[str, dict] = {}
+        card_by_identity: dict[Any, dict] = {}
+        display_name_by_identity: dict[Any, str] = {}
         for entry in deck.main_deck + deck.sideboard:
-            if entry.card and entry.display_name not in card_by_name:
-                card_by_name[entry.display_name] = entry.card
-        for name, quantity in sorted(combined_counts.items()):
-            override = card_copy_override(card_by_name.get(name))
+            identity = entry_canonical_key(entry)
+            display_name_by_identity.setdefault(identity, entry.display_name)
+            if entry.card:
+                card_by_identity.setdefault(identity, entry.card)
+        for identity, quantity in sorted(combined_counts.items()):
+            override = card_copy_override(card_by_identity.get(identity))
             effective_limit = max(copy_limit, override) if override is not None else copy_limit
             if quantity > effective_limit:
+                name = display_name_by_identity.get(identity, identity.name)
                 errors.append(f"{name} appears {quantity} times; the format limit is {effective_limit}.")
 
         if deck.format_name == TWIN_SUNS:
@@ -3045,6 +3094,19 @@ def entry_quantity_by_name(entries: list[DeckCardEntry]) -> Counter[str]:
     counter: Counter[str] = Counter()
     for entry in entries:
         counter[entry.display_name] += entry.quantity
+    return counter
+
+
+def entry_canonical_key(entry: DeckCardEntry):
+    if entry.card:
+        return canonical_key(entry.card)
+    return canonical_key({"display_name": entry.name})
+
+
+def entry_quantity_by_canonical_key(entries: list[DeckCardEntry]) -> Counter:
+    counter: Counter = Counter()
+    for entry in entries:
+        counter[entry_canonical_key(entry)] += entry.quantity
     return counter
 
 

@@ -6,7 +6,7 @@ from swu_mcp.card_service import CardService
 from swu_mcp.catalog import LocalCatalog
 from swu_mcp.collection_service import CollectionService
 from swu_mcp.deck_optimizer import optimize_card_list
-from swu_mcp.deck_service import DeckService, TWIN_SUNS
+from swu_mcp.deck_service import DeckCardEntry, DeckService, ParsedDeck, PREMIER, TWIN_SUNS
 from swu_mcp.deck_thesis import build_deck_thesis
 
 
@@ -69,3 +69,169 @@ def test_optimize_deck_uses_local_only_candidate_discovery() -> None:
 
     with pytest.raises(ValueError, match="No local candidate data"):
         service.optimize_deck(decklist={"main_deck": []}, theme="units")
+
+
+def _unit(
+    name: str,
+    *,
+    display_name: str | None = None,
+    number: int,
+    cost: int = 2,
+    hp: int = 2,
+    power: int = 2,
+    front_text: str = "",
+) -> dict[str, object]:
+    return {
+        "name": name,
+        "display_name": display_name or name,
+        "card_type": "Unit",
+        "set_code": "TST",
+        "number": f"{number:03d}",
+        "lookup_id": f"TST/{number:03d}",
+        "aspects": ["Command"],
+        "arenas": ["Ground"],
+        "cost": str(cost),
+        "hp": str(hp),
+        "power": str(power),
+        "front_text": front_text,
+    }
+
+
+def _entry(card: dict[str, object], *, quantity: int = 1) -> DeckCardEntry:
+    return DeckCardEntry(
+        quantity=quantity,
+        name=str(card["display_name"]),
+        zone="main_deck",
+        set_code=str(card["set_code"]),
+        card_number=str(card["number"]),
+        card=card,
+    )
+
+
+def _premier_shell(main_deck: list[DeckCardEntry]) -> ParsedDeck:
+    return ParsedDeck(
+        format_name=PREMIER,
+        leaders=[
+            DeckCardEntry(
+                quantity=1,
+                name="Command Leader",
+                zone="leaders",
+                card={
+                    "name": "Command Leader",
+                    "display_name": "Command Leader",
+                    "card_type": "Leader",
+                    "set_code": "TST",
+                    "number": "001",
+                    "lookup_id": "TST/001",
+                    "aspects": ["Command"],
+                },
+            )
+        ],
+        bases=[
+            DeckCardEntry(
+                quantity=1,
+                name="Command Base",
+                zone="bases",
+                card={
+                    "name": "Command Base",
+                    "display_name": "Command Base",
+                    "card_type": "Base",
+                    "set_code": "TST",
+                    "number": "002",
+                    "lookup_id": "TST/002",
+                    "aspects": ["Command"],
+                },
+            )
+        ],
+        main_deck=main_deck,
+    )
+
+
+def test_optimize_deck_rejects_illegal_canonical_duplicate_swap() -> None:
+    service = DeckService(CardService())
+    existing = _unit(
+        "Prepare for Takeoff",
+        number=10,
+        hp=8,
+        front_text="Draw a card. Deal 2 damage to a unit.",
+    )
+    illegal_candidate = _unit(
+        "Prepare For Takeoff",
+        display_name="Prepare For Takeoff",
+        number=11,
+        hp=8,
+        front_text="Draw a card. Deal 2 damage to a unit.",
+    )
+    weak_link = {
+        "name": "Weak Link",
+        "display_name": "Weak Link",
+        "card_type": "Event",
+        "set_code": "TST",
+        "number": "012",
+        "lookup_id": "TST/012",
+        "aspects": ["Command"],
+        "front_text": "",
+    }
+    filler = [_entry(_unit(f"Filler Unit {index}", number=100 + index)) for index in range(46)]
+    parsed = _premier_shell([
+        _entry(weak_link),
+        _entry(existing, quantity=3),
+        *filler,
+    ])
+    service.resolve_deck = lambda _parsed: parsed  # type: ignore[method-assign]
+    service._candidate_cards = lambda **_kwargs: [illegal_candidate]  # type: ignore[method-assign]
+
+    result = service.optimize_deck(decklist={"main_deck": []}, theme="units", max_iterations=1)
+
+    assert result["swaps"] == []
+    assert result["final_score"] == result["initial_score"]
+
+
+def test_optimize_deck_only_owned_rejects_swap_exceeding_owned_canonical_quantity(tmp_path: Path) -> None:
+    service = DeckService(
+        CardService(),
+        collection_service=CollectionService(tmp_path / "collection.json"),
+    )
+    owned_card = _unit(
+        "Owned Unit",
+        number=20,
+        hp=8,
+        front_text="Draw a card. Deal 2 damage to a unit.",
+    )
+    illegal_candidate = _unit(
+        "owned unit",
+        display_name="owned unit",
+        number=21,
+        hp=8,
+        front_text="Draw a card. Deal 2 damage to a unit.",
+    )
+    weak_link = {
+        "name": "Owned Weak Link",
+        "display_name": "Owned Weak Link",
+        "card_type": "Event",
+        "set_code": "TST",
+        "number": "022",
+        "lookup_id": "TST/022",
+        "aspects": ["Command"],
+        "front_text": "",
+    }
+    filler = [_entry(_unit(f"Owned Filler Unit {index}", number=200 + index)) for index in range(48)]
+    parsed = _premier_shell([
+        _entry(weak_link),
+        _entry(owned_card),
+        *filler,
+    ])
+    service.resolve_deck = lambda _parsed: parsed  # type: ignore[method-assign]
+    service._resolve_owned_printing = lambda card: card  # type: ignore[method-assign]
+    service._candidate_cards = lambda **_kwargs: [illegal_candidate]  # type: ignore[method-assign]
+    service._candidate_owned_count = lambda _card: 1  # type: ignore[method-assign]
+
+    result = service.optimize_deck(
+        decklist={"main_deck": []},
+        theme="units",
+        only_owned=True,
+        max_iterations=1,
+    )
+
+    assert result["swaps"] == []
+    assert result["final_score"] == result["initial_score"]

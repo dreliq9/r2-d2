@@ -569,3 +569,111 @@ def test_twin_suns_validation_rejects_duplicate_canonical_leaders() -> None:
     validation = DeckService(CardService()).validate_parsed_deck(parsed)
 
     assert "Twin Suns requires two distinct canonical leaders." in validation["errors"]
+
+
+def test_twin_suns_validation_rejects_duplicate_canonical_main_deck_cards_with_rendered_name_variants() -> None:
+    leaders = [
+        DeckCardEntry(
+            quantity=1,
+            name="Hero Leader",
+            zone="leaders",
+            card={
+                "name": "Hero Leader",
+                "display_name": "Hero Leader",
+                "card_type": "Leader",
+                "set_code": "TST",
+                "number": "001",
+                "lookup_id": "TST/001",
+                "aspects": ["Heroism", "Vigilance"],
+            },
+        ),
+        DeckCardEntry(
+            quantity=1,
+            name="Hero Partner",
+            zone="leaders",
+            card={
+                "name": "Hero Partner",
+                "display_name": "Hero Partner",
+                "card_type": "Leader",
+                "set_code": "TST",
+                "number": "002",
+                "lookup_id": "TST/002",
+                "aspects": ["Heroism", "Command"],
+            },
+        ),
+    ]
+    base = DeckCardEntry(
+        quantity=1,
+        name="Hero Base",
+        zone="bases",
+        card={
+            "name": "Hero Base",
+            "display_name": "Hero Base",
+            "card_type": "Base",
+            "set_code": "TST",
+            "number": "003",
+            "lookup_id": "TST/003",
+            "aspects": ["Heroism"],
+        },
+    )
+    duplicate_cards = [
+        {
+            "name": "Prepare For Takeoff",
+            "display_name": "Prepare For Takeoff",
+            "card_type": "Event",
+            "set_code": "TST",
+            "number": "010",
+            "lookup_id": "TST/010",
+            "aspects": ["Heroism"],
+            "front_text": "",
+        },
+        {
+            "name": "Prepare for Takeoff",
+            "display_name": "Prepare for Takeoff",
+            "card_type": "Event",
+            "set_code": "TST",
+            "number": "011",
+            "lookup_id": "TST/011",
+            "aspects": ["Heroism"],
+            "front_text": "",
+        },
+    ]
+    main_deck = [
+        DeckCardEntry(
+            quantity=1,
+            name=str(card["display_name"]),
+            zone="main_deck",
+            card=card,
+        )
+        for card in duplicate_cards
+    ] + [
+        DeckCardEntry(
+            quantity=1,
+            name=f"Unique Unit {index}",
+            zone="main_deck",
+            card={
+                "name": f"Unique Unit {index}",
+                "display_name": f"Unique Unit {index}",
+                "card_type": "Unit",
+                "set_code": "TST",
+                "number": f"{100 + index}",
+                "lookup_id": f"TST/{100 + index}",
+                "aspects": ["Heroism"],
+                "cost": "2",
+                "power": "2",
+                "hp": "2",
+            },
+        )
+        for index in range(78)
+    ]
+    parsed = ParsedDeck(
+        format_name=TWIN_SUNS,
+        leaders=leaders,
+        bases=[base],
+        main_deck=main_deck,
+    )
+
+    validation = DeckService(CardService()).validate_parsed_deck(parsed)
+
+    assert not validation["legal"]
+    assert "Prepare For Takeoff appears 2 times; the format limit is 1." in validation["errors"]
