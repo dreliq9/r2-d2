@@ -1741,8 +1741,8 @@ class DeckService:
 
         Twin Suns requires the two leaders to share Heroism or Villainy. This
         method enumerates all such pairs from the (optionally owned) leader
-        pool, runs `generate_deck` for each, and returns the top_k ranked by
-        a composite score: synergy + interaction density - off-aspect burden.
+        pool, fast-scores them, brews the top finalists, and returns the top_k
+        by a composite score: synergy + interaction density - off-aspect burden.
 
         moral: restrict to "Heroism" or "Villainy" pairs (default: both).
         primary_aspects: filter leaders whose aspects intersect this set.

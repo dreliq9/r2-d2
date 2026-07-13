@@ -1,9 +1,26 @@
-from swu_mcp.deck_service import DeckService, TWIN_SUNS
+from swu_mcp.deck_service import DeckService
+
+
+class FakeCardService:
+    def __init__(self, leaders: list[dict] | None = None) -> None:
+        self.leaders = leaders or []
+
+    def _ensure_local_catalog(self) -> None:
+        pass
+
+    def search_cards(self, **kwargs) -> dict:
+        return {"cards": self.leaders}
 
 
 class DummyDeckService(DeckService):
-    def __init__(self):
+    def __init__(self, leaders: list[dict] | None = None) -> None:
         self.generate_calls = 0
+        self.card_service = FakeCardService(leaders)
+        self.collection_service = None
+        self.sessions = {}
+
+    def _safe_lookup(self, card: dict) -> dict:
+        return card
 
     def generate_deck(self, **kwargs):
         self.generate_calls += 1
@@ -15,9 +32,28 @@ class DummyDeckService(DeckService):
 
 
 def test_rank_leader_pairs_shortlist_limits_full_brews() -> None:
-    service = DummyDeckService()
+    top_k = 2
+    leaders = [
+        {
+            "lookup_id": f"TST/{number:03}",
+            "set_code": "TST",
+            "number": f"{number:03}",
+            "name": f"Leader {number}",
+            "subtitle": "Shortlist Test",
+            "display_name": f"Leader {number} - Shortlist Test",
+            "card_type": "Leader",
+            "aspects": ["Villainy"],
+        }
+        for number in range(1, 7)
+    ]
+    service = DummyDeckService(leaders)
 
-    assert hasattr(service, "_leader_pair_fast_score")
+    result = service.rank_leader_pairs(only_owned=False, top_k=top_k)
+
+    total_pairs = len(leaders) * (len(leaders) - 1) // 2
+    assert result["pairs_considered"] == total_pairs
+    assert service.generate_calls <= top_k * 3
+    assert service.generate_calls < total_pairs
 
 
 def test_fast_score_prefers_theme_text() -> None:
