@@ -46,6 +46,11 @@ class _CatalogCard:
         return self.card
 
 
+def _local_catalog(path: Path, cards: list[dict[str, object]]) -> LocalCatalog:
+    path.write_text(json.dumps(cards), encoding="utf-8")
+    return LocalCatalog(str(path))
+
+
 def test_requested_twin_suns_leaders_resolve_by_owned_canonical_identity(tmp_path: Path) -> None:
     service = DeckService(CardService(), collection_service=_collection(tmp_path / "collection.json"))
     service._resolve_leader_by_name = lambda _: pytest.fail("owned leader resolution used name lookup")  # type: ignore[method-assign]
@@ -242,6 +247,54 @@ def test_normal_automatic_selection_uses_local_catalog_without_search(tmp_path: 
 
     assert {leader["lookup_id"] for leader in leaders} == {"LOF/016", "LOF/007"}
     assert base["lookup_id"] == "LOF/010"
+
+
+def test_requested_normal_leader_uses_local_catalog_without_search(tmp_path: Path) -> None:
+    service = DeckService(CardService())
+    service.card_service.catalog = _local_catalog(
+        tmp_path / "cards.json",
+        [{"Set": "LOF", "Number": "016", "Name": "Qui-Gon Jinn", "Type": "Leader"}],
+    )
+    service.card_service.search_cards = lambda **_: pytest.fail("requested leader used live search")  # type: ignore[method-assign]
+
+    leaders = service._pick_leaders(
+        theme="Force replay",
+        format_name="premier",
+        leader_names=["Qui-Gon Jinn"],
+    )
+
+    assert leaders[0]["lookup_id"] == "LOF/016"
+
+
+def test_requested_normal_base_uses_local_catalog_without_live_lookup(tmp_path: Path) -> None:
+    service = DeckService(CardService())
+    service.card_service.catalog = _local_catalog(
+        tmp_path / "cards.json",
+        [{"Set": "LOF", "Number": "010", "Name": "Echo Base", "Type": "Base"}],
+    )
+    service.card_service.lookup_card = lambda **_: pytest.fail("requested base used live lookup")  # type: ignore[method-assign]
+    service.card_service.search_cards = lambda **_: pytest.fail("requested base used live search")  # type: ignore[method-assign]
+
+    base = service._pick_base(base_name="Echo Base", aspect_pool=set())
+
+    assert base["lookup_id"] == "LOF/010"
+
+
+def test_missing_requested_normal_cards_fail_without_live_lookup(tmp_path: Path) -> None:
+    service = DeckService(CardService())
+    service.card_service.catalog = _local_catalog(tmp_path / "cards.json", [])
+    service.card_service.lookup_card = lambda **_: pytest.fail("missing requested base used live lookup")  # type: ignore[method-assign]
+    service.card_service.search_cards = lambda **_: pytest.fail("missing requested leader used live search")  # type: ignore[method-assign]
+
+    with pytest.raises(ValueError, match="Could not resolve requested leader") as error:
+        service._pick_leaders(
+            theme="Force replay",
+            format_name="premier",
+            leader_names=["Missing Leader"],
+        )
+    assert "as owned cards" not in str(error.value)
+    with pytest.raises(ValueError, match="No local base data"):
+        service._pick_base(base_name="Missing Base", aspect_pool=set())
 
 
 def test_automatic_owned_base_selection_fails_without_owned_base(tmp_path: Path) -> None:

@@ -2582,8 +2582,9 @@ class DeckService:
                 continue
             leaders.append(leader)
         if unresolved:
+            ownership_context = " as owned cards" if only_owned else ""
             raise ValueError(
-                "Could not resolve requested leader(s) as owned cards: "
+                f"Could not resolve requested leader(s){ownership_context}: "
                 + ", ".join(unresolved)
             )
         if format_name == TWIN_SUNS and len(leaders) != TWIN_SUNS_LEADER_COUNT:
@@ -2600,16 +2601,6 @@ class DeckService:
             card = self.card_service.catalog.lookup_by_name(name, preferred_type="Leader")
             if card:
                 return card.to_dict()
-        try:
-            result = self.card_service.search_cards(name, filters={"type": "Leader"}, limit=5)
-            lowered = name.strip().lower()
-            for candidate in result["cards"]:
-                if lowered in candidate["name"].lower():
-                    return self.card_service.lookup_card(
-                        set_code=candidate["set_code"], card_number=candidate["number"]
-                    )
-        except Exception:
-            pass
         return None
 
     def _pick_base(
@@ -2629,7 +2620,13 @@ class DeckService:
                         f"Could not resolve requested base as an owned card: {base_name}"
                     )
                 return base
-            return self.card_service.lookup_card(name=base_name)
+            self.card_service._ensure_local_catalog()
+            if not self.card_service.catalog.is_available():
+                raise ValueError(f"No local base data available for requested base: {base_name}")
+            base = self.card_service.catalog.lookup_by_name(base_name, preferred_type="Base")
+            if base is None:
+                raise ValueError(f"No local base data available for requested base: {base_name}")
+            return base.to_dict()
 
         # Score each candidate base by aspect-pool *expansion* — the most
         # valuable base is one whose aspect isn't already covered by the
