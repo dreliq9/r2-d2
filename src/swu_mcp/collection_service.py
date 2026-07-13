@@ -5,6 +5,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from .card_identity import CanonicalCardKey, OwnedPrinting, canonical_key
+from .catalog import LocalCatalog
 from .config import settings
 
 
@@ -20,6 +22,16 @@ def _read_card_cache(set_code: str, card_number: str) -> dict | None:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+
+
+def _read_card_catalog(set_code: str, card_number: str) -> dict | None:
+    if not settings.card_catalog_path:
+        return None
+    try:
+        card = LocalCatalog(settings.card_catalog_path).lookup(set_code, card_number)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    return card.raw or card.to_dict() if card is not None else None
 
 
 def _enrichment_fields(set_code: str, card_number: str) -> dict:
@@ -61,6 +73,7 @@ class CollectionService:
     def __init__(self, storage_path: Path) -> None:
         self.storage_path = Path(storage_path)
         self._entries: dict[tuple[str, str], OwnedCard] = {}
+        self._entry_metadata: dict[tuple[str, str], dict] = {}
         self._loaded = False
 
     def _load_from_disk(self) -> None:
@@ -83,6 +96,7 @@ class CollectionService:
                 count=int(row.get("count", 0)),
                 foil_count=int(row.get("foil_count", 0)),
             )
+            self._entry_metadata[key] = row
 
     def _save_to_disk(self) -> None:
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
@@ -178,6 +192,7 @@ class CollectionService:
             return {"ok": False, "error": f"CSV not found: {resolved}"}
         if not merge:
             self._entries = {}
+            self._entry_metadata = {}
         imported = 0
         skipped = 0
         with resolved.open(newline="", encoding="utf-8-sig") as handle:
@@ -241,6 +256,42 @@ class CollectionService:
         entry = self._entries.get(key)
         return entry.count if entry is not None else 0
 
+    def owned_canonical_index(self) -> dict[CanonicalCardKey, list[OwnedPrinting]]:
+        self._load_from_disk()
+        index: dict[CanonicalCardKey, list[OwnedPrinting]] = {}
+        for key, entry in self._entries.items():
+            card = (
+                _read_card_cache(entry.set_code, entry.card_number)
+                or _read_card_catalog(entry.set_code, entry.card_number)
+                or self._entry_metadata.get(key)
+                or {}
+            )
+            if not card.get("Name") and not card.get("name") and not card.get("display_name"):
+                continue
+            identity = canonical_key(card)
+            index.setdefault(identity, []).append(
+                OwnedPrinting(
+                    set_code=entry.set_code,
+                    card_number=entry.card_number,
+                    count=entry.count,
+                    foil_count=entry.foil_count,
+                    canonical_key=identity,
+                )
+            )
+        return index
+
+    def owned_canonical_count(self, card: dict) -> int:
+        return sum(
+            printing.count
+            for printing in self.owned_canonical_index().get(canonical_key(card), [])
+        )
+
+    def choose_owned_printing(self, card: dict) -> OwnedPrinting | None:
+        printings = self.owned_canonical_index().get(canonical_key(card), [])
+        if not printings:
+            return None
+        return sorted(printings, key=lambda p: (p.set_code, p.card_number))[0]
+
     def is_owned(self, set_code: str, card_number: str | int, quantity: int = 1) -> bool:
         return self.owned_count(set_code, card_number) >= max(1, int(quantity))
 
@@ -287,6 +338,7 @@ class CollectionService:
 
     def clear(self) -> dict:
         self._entries = {}
+        self._entry_metadata = {}
         self._loaded = True
         if self.storage_path.exists():
             try:
