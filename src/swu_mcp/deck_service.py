@@ -923,8 +923,13 @@ class DeckService:
         format_name: str = PREMIER,
         target_matchups: list[str] | None = None,
         meta_context: dict[str, Any] | None = None,
+        _parsed: ParsedDeck | None = None,
     ) -> dict[str, Any]:
-        parsed = self._resolve_deck_input(session_id=session_id, decklist=decklist, format_name=format_name)
+        parsed = _parsed or self._resolve_deck_input(
+            session_id=session_id,
+            decklist=decklist,
+            format_name=format_name,
+        )
         validation = self.validate_parsed_deck(parsed)
 
         main_cards = expand_entries(parsed.main_deck)
@@ -1596,11 +1601,13 @@ class DeckService:
                 "Generated deck failed validation: "
                 + "; ".join(validation.get("errors") or ["unknown validation error"])
             )
+        if not all(entry.card for entry in parsed.leaders + parsed.bases + parsed.main_deck):
+            raise ValueError("Generated deck analysis requires resolved card data.")
         analysis = self.analyze_deck(
-            decklist=self.export_deck(deck=parsed, export_format="json")["deck"],
             format_name=normalized_format,
             target_matchups=target_matchups,
             meta_context=meta_context,
+            _parsed=parsed,
         )
         return {
             "theme": theme,

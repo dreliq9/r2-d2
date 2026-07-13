@@ -495,6 +495,61 @@ def test_suggestion_candidate_discovery_keeps_search_fallback() -> None:
     assert candidates == [fallback_card]
 
 
+def test_generation_analyzes_resolved_deck_without_lookup_card() -> None:
+    service = DeckService(CardService())
+    leader = {
+        "lookup_id": "LOF/001",
+        "set_code": "LOF",
+        "number": "001",
+        "name": "Qui-Gon Jinn",
+        "display_name": "Qui-Gon Jinn",
+        "card_type": "Leader",
+        "aspects": ["Vigilance"],
+        "traits": [],
+        "keywords": [],
+        "front_text": "",
+    }
+    base = {
+        "lookup_id": "LOF/002",
+        "set_code": "LOF",
+        "number": "002",
+        "name": "Echo Base",
+        "display_name": "Echo Base",
+        "card_type": "Base",
+        "aspects": ["Vigilance"],
+        "traits": [],
+        "keywords": [],
+        "front_text": "",
+        "hp": "30",
+    }
+    candidates = [
+        {
+            "lookup_id": f"LOF/{index:03d}",
+            "set_code": "LOF",
+            "number": f"{index:03d}",
+            "name": f"Unit {index}",
+            "display_name": f"Unit {index}",
+            "card_type": "Unit",
+            "aspects": ["Vigilance"],
+            "traits": [],
+            "keywords": [],
+            "front_text": "",
+            "cost": "2",
+            "power": "2",
+            "hp": "2",
+        }
+        for index in range(10, 31)
+    ]
+    service._pick_leaders = lambda **_: [leader]  # type: ignore[method-assign]
+    service._pick_base = lambda **_: base  # type: ignore[method-assign]
+    service._candidate_cards = lambda **_: candidates  # type: ignore[method-assign]
+    service.card_service.lookup_card = lambda **_: pytest.fail("post-generation analysis used live lookup")  # type: ignore[method-assign]
+
+    generated = service.generate_deck(theme="Vigilance units")
+
+    assert generated["analysis"]["deck_size"] >= 50
+
+
 def test_twin_suns_validation_rejects_duplicate_canonical_leaders() -> None:
     duplicate = {
         "name": "Qui-Gon Jinn",
