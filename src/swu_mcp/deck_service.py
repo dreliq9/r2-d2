@@ -11,6 +11,7 @@ from typing import Any
 from .card_identity import canonical_key
 from .card_service import CardService
 from .collection_service import CollectionService
+from .deck_thesis import build_deck_thesis, target_packages_for_theme  # noqa: F401
 from .interaction_glossary import (
     _filter_aspect_needs,
     needs_set as interaction_needs_set,
@@ -125,55 +126,6 @@ KEYWORD_SYNERGY_PAIRS: list[frozenset[str]] = [
 ]
 KEYWORD_SYNERGY_BONUS = 2.0
 
-# Theme keyword → combo package(s) it implies. Used by rank_leader_pairs to
-# weight package-fit when scoring brewed pairings against a stated theme.
-THEME_TO_PACKAGES: dict[str, set[str]] = {
-    "force":       {"force_engine"},
-    "jedi":        {"force_engine"},
-    "lightsaber":  {"force_engine"},
-    "indirect":    {"indirect_damage"},
-    "bounty":      {"bounty_hunter", "indirect_damage"},
-    "hunter":      {"bounty_hunter"},
-    "defeat":      {"when_defeated"},
-    "sacrifice":   {"when_defeated"},
-    "exploit":     {"when_defeated"},
-    "death":       {"when_defeated"},
-    "pilot":       {"pilot_vehicle"},
-    "vehicle":     {"pilot_vehicle"},
-    "fighter":     {"pilot_vehicle"},
-    "token":       {"token_swarm"},
-    "swarm":       {"token_swarm"},
-    "wide":        {"token_swarm"},
-    "ramp":        {"cost_reduction"},
-    "discount":    {"cost_reduction"},
-    "cheap":       {"cost_reduction"},
-    "sentinel":    {"fortress"},
-    "defense":     {"fortress"},
-    "defensive":   {"fortress"},
-    "wall":        {"fortress"},
-    "fortress":    {"fortress"},
-    "control":     {"fortress"},
-    "exhaust":     {"exhaust_engine"},
-    "ready":       {"exhaust_engine"},
-    "tap":         {"exhaust_engine"},
-    "mandalorian": {"mandalorian"},
-    "mando":       {"mandalorian"},
-    "bounce":      {"replay_engine"},
-    "replay":      {"replay_engine"},
-    "re-trigger":  {"replay_engine"},
-    "retrigger":   {"replay_engine"},
-    "when played": {"replay_engine"},
-    "grit":        {"self_damage_engine"},
-    "self-damage": {"self_damage_engine"},
-    "self damage": {"self_damage_engine"},
-    "on attack":   {"attack_engine"},
-    "attack-engine":{"attack_engine"},
-    "free attack": {"attack_engine"},
-    "discard":     {"discard_engine"},
-    "graveyard":   {"discard_engine"},
-    "recursion":   {"discard_engine"},
-    "from discard":{"discard_engine"},
-}
 THEME_FIT_PER_MATCH = 0.5
 THEME_FIT_CAP = 25.0
 
@@ -1786,10 +1738,7 @@ class DeckService:
         # express. If the theme mentions "force"/"jedi", we'll bonus decks
         # heavy in force_engine-tagged cards, etc.
         theme_lower = (theme or "").lower()
-        target_packages: set[str] = set()
-        for keyword, pkgs in THEME_TO_PACKAGES.items():
-            if keyword in theme_lower:
-                target_packages |= pkgs
+        target_packages = target_packages_for_theme(theme_lower)
 
         def _leader_text(leader: dict[str, Any]) -> str:
             return " ".join(
