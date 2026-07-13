@@ -370,6 +370,70 @@ def test_automatic_owned_base_resolves_bare_collection_entry_from_local_catalog(
     assert base["lookup_id"] == "LOF/010"
 
 
+def test_automatic_owned_leaders_resolve_bare_collection_entries_from_local_catalog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = DeckService(
+        CardService(),
+        collection_service=_collection(
+            tmp_path / "collection.json",
+            entries=[
+                {"set_code": "LOF", "card_number": "016", "count": 1, "foil_count": 0},
+                {"set_code": "LOF", "card_number": "007", "count": 1, "foil_count": 0},
+            ],
+        ),
+    )
+    service.card_service.catalog = _local_catalog(
+        tmp_path / "cards.json",
+        [
+            {"Set": "LOF", "Number": "016", "Name": "Qui-Gon Jinn", "Type": "Leader", "Aspects": ["Vigilance"]},
+            {"Set": "LOF", "Number": "007", "Name": "Avar Kriss", "Type": "Leader", "Aspects": ["Vigilance"]},
+        ],
+    )
+    monkeypatch.setattr("swu_mcp.collection_service._read_card_cache", lambda *_: None)
+
+    leaders = service._pick_leaders(
+        theme="Force replay", format_name=TWIN_SUNS, leader_names=None, only_owned=True
+    )
+
+    assert {leader["lookup_id"] for leader in leaders} == {"LOF/016", "LOF/007"}
+
+
+def test_bare_owned_main_card_resolves_and_counts_from_local_catalog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = DeckService(
+        CardService(),
+        collection_service=_collection(
+            tmp_path / "collection.json",
+            entries=[{"set_code": "LOF", "card_number": "020", "count": 2, "foil_count": 0}],
+        ),
+    )
+    candidate = {
+        "name": "Rebel Pathfinder",
+        "display_name": "Rebel Pathfinder",
+        "card_type": "Unit",
+        "set_code": "SOR",
+        "number": "001",
+        "lookup_id": "SOR/001",
+    }
+    service.card_service.catalog = _local_catalog(
+        tmp_path / "cards.json",
+        [
+            {"Set": "SOR", "Number": "001", "Name": "Rebel Pathfinder", "Type": "Unit"},
+            {"Set": "LOF", "Number": "020", "Name": "Rebel Pathfinder", "Type": "Unit"},
+        ],
+    )
+    monkeypatch.setattr("swu_mcp.collection_service._read_card_cache", lambda *_: None)
+
+    resolved = service._resolve_owned_printing(candidate)
+
+    assert resolved is not None
+    assert resolved["lookup_id"] == "LOF/020"
+    assert service._candidate_owned_count(candidate) == 2
+    assert service._candidate_is_owned(candidate, minimum=2)
+
+
 def test_requested_twin_suns_duplicate_leaders_fail_loudly(tmp_path: Path) -> None:
     service = DeckService(CardService(), collection_service=_collection(tmp_path / "collection.json"))
 

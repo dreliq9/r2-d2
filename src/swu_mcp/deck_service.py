@@ -538,20 +538,44 @@ class DeckService:
     def _candidate_is_owned(self, candidate: dict[str, Any], *, minimum: int = 1) -> bool:
         if self.collection_service is None:
             return True
-        owned_printing = self.collection_service.choose_owned_printing(candidate)
-        return (
-            owned_printing is not None
-            and self.collection_service.owned_canonical_count(candidate) >= minimum
-        )
+        return self._candidate_owned_count(candidate) >= minimum
 
     def _candidate_owned_count(self, candidate: dict[str, Any]) -> int:
         if self.collection_service is None:
             return 0
+        catalog_count = sum(
+            count
+            for owned_card, count in self._owned_catalog_cards()
+            if canonical_key(owned_card) == canonical_key(candidate)
+        )
+        if catalog_count:
+            return catalog_count
         return self.collection_service.owned_canonical_count(candidate)
+
+    def _owned_catalog_cards(self) -> list[tuple[dict[str, Any], int]]:
+        if self.collection_service is None:
+            return []
+        self.card_service._ensure_local_catalog()
+        self.collection_service._load_from_disk()
+        owned_cards: list[tuple[dict[str, Any], int]] = []
+        for entry in self.collection_service._entries.values():
+            if entry.count <= 0:
+                continue
+            card = self.card_service.catalog.lookup(entry.set_code, entry.card_number)
+            if card is not None:
+                owned_cards.append((card.to_dict(), entry.count))
+        return sorted(owned_cards, key=lambda item: str(item[0].get("lookup_id", "")))
 
     def _resolve_owned_printing(self, card: dict[str, Any]) -> dict[str, Any] | None:
         if self.collection_service is None:
             return card
+        matching_catalog_cards = [
+            owned_card
+            for owned_card, _ in self._owned_catalog_cards()
+            if canonical_key(owned_card) == canonical_key(card)
+        ]
+        if matching_catalog_cards:
+            return matching_catalog_cards[0]
         owned_printing = self.collection_service.choose_owned_printing(card)
         if owned_printing is None:
             return None
@@ -574,7 +598,11 @@ class DeckService:
     def _owned_cards_of_type(self, card_type: str) -> list[dict[str, Any]]:
         if self.collection_service is None:
             return []
-        owned_cards: list[dict[str, Any]] = []
+        owned_cards = {
+            str(card.get("lookup_id", "")): card
+            for card, _ in self._owned_catalog_cards()
+            if card.get("card_type") == card_type
+        }
         for identity, printings in self.collection_service.owned_canonical_index().items():
             if identity.card_type != card_type or not any(printing.count > 0 for printing in printings):
                 continue
@@ -590,8 +618,8 @@ class DeckService:
                 }
             )
             if card is not None:
-                owned_cards.append(card)
-        return sorted(owned_cards, key=lambda card: str(card.get("lookup_id", "")))
+                owned_cards.setdefault(str(card.get("lookup_id", "")), card)
+        return sorted(owned_cards.values(), key=lambda card: str(card.get("lookup_id", "")))
 
     def _safe_lookup(self, card: dict[str, Any]) -> dict[str, Any] | None:
         try:
@@ -2623,16 +2651,6 @@ class DeckService:
 
         if only_owned and self.collection_service is not None:
             owned_bases = self._owned_cards_of_type("Base")
-            resolved_lookup_ids = {str(base.get("lookup_id", "")) for base in owned_bases}
-            self.collection_service._load_from_disk()
-            for entry in self.collection_service._entries.values():
-                if entry.count <= 0:
-                    continue
-                card = self.card_service.catalog.lookup(entry.set_code, entry.card_number)
-                if card is None or card.card_type != "Base" or card.lookup_id in resolved_lookup_ids:
-                    continue
-                owned_bases.append(card.to_dict())
-                resolved_lookup_ids.add(card.lookup_id)
             if owned_bases:
                 owned_bases.sort(key=_score_base, reverse=True)
                 return owned_bases[0]
