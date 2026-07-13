@@ -1753,45 +1753,13 @@ class DeckService:
             )
 
         # Build the candidate leader pool. Two paths:
-        # - only_owned=True: walk the collection directly via the local
-        #   cache (NOT lookup_card, which hits the API for every entry).
-        #   The API search has a hard 100-result cap that silently
-        #   excludes some leaders.
+        # - only_owned=True: use the canonical owned-card resolver so bare
+        #   collection rows can resolve through the local catalog.
         # - only_owned=False: fall back to the API search.
         self.card_service._ensure_local_catalog()
         leaders: list[dict[str, Any]] = []
         if only_owned and self.collection_service is not None:
-            from .collection_service import _read_card_cache
-            self.collection_service._load_from_disk()
-            for entry in self.collection_service._entries.values():
-                cached = _read_card_cache(entry.set_code, entry.card_number)
-                if not cached or cached.get("Type") != "Leader":
-                    continue
-                normalized = {
-                    "lookup_id": f"{entry.set_code.upper()}/{str(entry.card_number).zfill(3)}",
-                    "set_code": entry.set_code.upper(),
-                    "number": str(entry.card_number).zfill(3),
-                    "name": cached.get("Name"),
-                    "subtitle": cached.get("Subtitle"),
-                    "display_name": (
-                        f"{cached.get('Name')} - {cached.get('Subtitle')}"
-                        if cached.get("Subtitle")
-                        else cached.get("Name")
-                    ),
-                    "card_type": cached.get("Type"),
-                    "type": cached.get("Type"),
-                    "aspects": cached.get("Aspects") or [],
-                    "traits": cached.get("Traits") or [],
-                    "keywords": cached.get("Keywords") or [],
-                    "hp": cached.get("HP"),
-                    "power": cached.get("Power"),
-                    "cost": cached.get("Cost"),
-                    "front_text": cached.get("FrontText") or "",
-                    "back_text": cached.get("BackText") or "",
-                    "epic_action": cached.get("EpicAction") or "",
-                    "rarity": cached.get("Rarity"),
-                }
-                leaders.append(normalized)
+            leaders = self._owned_cards_of_type("Leader")
         else:
             try:
                 result = self.card_service.search_cards(
