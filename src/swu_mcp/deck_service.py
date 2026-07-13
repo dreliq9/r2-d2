@@ -1568,6 +1568,9 @@ class DeckService:
             meta_context=meta_context,
             _parsed=parsed,
         )
+        from .deck_evaluator import evaluate_deck_cards
+
+        evaluation = evaluate_deck_cards(expand_entries(parsed.main_deck), thesis)
         return {
             "theme": theme,
             "format": normalized_format,
@@ -1577,6 +1580,15 @@ class DeckService:
             "deck_holoscan": self.export_deck(deck=parsed, export_format="holoscan")["deck"],
             "validation": validation,
             "analysis": analysis,
+            "evaluation": {
+                "total_score": evaluation.total_score,
+                "axis_scores": evaluation.axis_scores,
+                "metrics": evaluation.metrics,
+                "warnings": [
+                    {"code": warning.code, "message": warning.message}
+                    for warning in evaluation.warnings
+                ],
+            },
             "notes": [
                 "This first-pass generator prioritizes on-aspect cards, early curve stability, and cards that match the requested theme language.",
                 "You can improve it further by uploading the generated list and using swu_suggest_cards with matchup-specific goals.",
