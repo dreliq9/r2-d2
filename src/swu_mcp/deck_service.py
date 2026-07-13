@@ -487,15 +487,27 @@ class DeckService:
         self.collection_service = collection_service
         self.sessions: dict[str, DeckSession] = {}
 
-    def _candidate_is_owned(self, candidate: dict[str, Any], *, minimum: int = 1) -> bool:
+    def _candidate_is_owned(
+        self,
+        candidate: dict[str, Any],
+        *,
+        minimum: int = 1,
+        owned_counts: Counter | None = None,
+    ) -> bool:
         if self.collection_service is None:
             return True
-        return self._candidate_owned_count(candidate) >= minimum
+        return self._candidate_owned_count(candidate, owned_counts=owned_counts) >= minimum
 
-    def _candidate_owned_count(self, candidate: dict[str, Any]) -> int:
+    def _candidate_owned_count(
+        self,
+        candidate: dict[str, Any],
+        *,
+        owned_counts: Counter | None = None,
+    ) -> int:
         if self.collection_service is None:
             return 0
-        return self._owned_counts_by_canonical_key().get(canonical_key(candidate), 0)
+        available_counts = owned_counts if owned_counts is not None else self._owned_counts_by_canonical_key()
+        return available_counts.get(canonical_key(candidate), 0)
 
     def _owned_catalog_cards(self) -> list[tuple[dict[str, Any], int]]:
         if self.collection_service is None:
@@ -511,9 +523,21 @@ class DeckService:
                 owned_cards.append((card.to_dict(), entry.count))
         return sorted(owned_cards, key=lambda item: str(item[0].get("lookup_id", "")))
 
-    def _resolve_owned_printing(self, card: dict[str, Any]) -> dict[str, Any] | None:
+    def _resolve_owned_printing(
+        self,
+        card: dict[str, Any],
+        *,
+        owned_printings: dict[Any, dict[str, Any]] | None = None,
+    ) -> dict[str, Any] | None:
         if self.collection_service is None:
             return card
+        if owned_printings is not None:
+            owned_card = owned_printings.get(canonical_key(card))
+            if owned_card is None:
+                return None
+            resolved = dict(card)
+            resolved.update(owned_card)
+            return resolved
         matching_catalog_cards = [
             owned_card
             for owned_card, _ in self._owned_catalog_cards()
@@ -539,6 +563,41 @@ class DeckService:
             }
         )
         return resolved
+
+    def _owned_printings_by_canonical_key(self) -> dict[Any, dict[str, Any]]:
+        if self.collection_service is None:
+            return {}
+
+        printings: dict[Any, dict[str, Any]] = {}
+        for owned_card, _ in self._owned_catalog_cards():
+            printings.setdefault(canonical_key(owned_card), owned_card)
+        for identity, owned_printings in self.collection_service.owned_canonical_index().items():
+            if identity in printings:
+                continue
+            viable_printings = [printing for printing in owned_printings if printing.count > 0]
+            if not viable_printings:
+                continue
+            owned_printing = sorted(viable_printings, key=lambda p: (p.set_code, p.card_number))[0]
+            owned_card = self.card_service.catalog.lookup(
+                owned_printing.set_code,
+                owned_printing.card_number,
+            )
+            if owned_card is not None:
+                printings[identity] = owned_card.to_dict()
+                continue
+            display_name = identity.name
+            if identity.subtitle:
+                display_name = f"{display_name} - {identity.subtitle}"
+            printings[identity] = {
+                "name": identity.name,
+                "subtitle": identity.subtitle,
+                "display_name": display_name,
+                "card_type": identity.card_type,
+                "set_code": owned_printing.set_code,
+                "number": owned_printing.card_number,
+                "lookup_id": f"{owned_printing.set_code}/{owned_printing.card_number.zfill(3)}",
+            }
+        return printings
 
     def _owned_cards_of_type(self, card_type: str) -> list[dict[str, Any]]:
         if self.collection_service is None:
@@ -1184,17 +1243,22 @@ class DeckService:
             return set(card.get("aspects") or []).issubset(legal_aspects)
 
         target_main_size = PREMIER_MAIN_DECK_MIN if normalized_format == PREMIER else TWIN_SUNS_MAIN_DECK_MIN
+        collection_active = only_owned and self.collection_service is not None
+        owned_counts = self._owned_counts_by_canonical_key() if collection_active else None
+        owned_printings = self._owned_printings_by_canonical_key() if collection_active else None
         candidate_pool = self._candidate_cards(
             goal_query=compile_goal_query(theme),
             available_aspects=aspect_pool,
             only_owned=only_owned,
             local_only=True,
+            owned_printings=owned_printings,
         )
         filler_pool = self._candidate_cards(
             goal_query="unit event",
             available_aspects=aspect_pool,
             only_owned=only_owned,
             local_only=True,
+            owned_printings=owned_printings,
         )
         merged_by_id: dict[str, dict[str, Any]] = {}
         for candidate in list(candidate_pool) + list(filler_pool):
@@ -1215,7 +1279,6 @@ class DeckService:
         # don't slip through as distinct cards.
         id_counts: Counter[str] = Counter()
         copy_limit = 1 if normalized_format == TWIN_SUNS else PREMIER_COPY_LIMIT
-        collection_active = only_owned and self.collection_service is not None
 
         def card_key(card: dict[str, Any]) -> str:
             # Canonical card identity. The same card can have many printings
@@ -1361,7 +1424,7 @@ class DeckService:
                 return False
             if id_counts[card_key(candidate)] >= copy_limit:
                 return False
-            if collection_active and not self._candidate_is_owned(candidate):
+            if collection_active and not self._candidate_is_owned(candidate, owned_counts=owned_counts):
                 return False
             # Hard aspect-legality gate. Without this the generator treats
             # off-aspect cards as a soft scoring penalty, so a strong theme
@@ -1446,7 +1509,7 @@ class DeckService:
                 effective_limit = max(copy_limit, override) if override else copy_limit
                 quantity = min(quantity, effective_limit - id_counts[key])
                 if collection_active:
-                    quantity = min(quantity, self._candidate_owned_count(best))
+                    quantity = min(quantity, self._candidate_owned_count(best, owned_counts=owned_counts))
                 remaining_slots = quota - picked_in_section
                 quantity = min(quantity, remaining_slots)
                 if quantity <= 0:
@@ -1508,7 +1571,7 @@ class DeckService:
                 effective_limit = max(copy_limit, override) if override else copy_limit
                 quantity = min(quantity, effective_limit - id_counts[key])
                 if collection_active:
-                    quantity = min(quantity, self._candidate_owned_count(best))
+                    quantity = min(quantity, self._candidate_owned_count(best, owned_counts=owned_counts))
                 quantity = min(quantity, target_main_size - current_total)
                 if quantity <= 0:
                     continue
@@ -2651,8 +2714,11 @@ class DeckService:
         available_aspects: set[str],
         only_owned: bool = False,
         local_only: bool = False,
+        owned_printings: dict[Any, dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         restrict_to_owned = only_owned and self.collection_service is not None
+        if restrict_to_owned and owned_printings is None:
+            owned_printings = self._owned_printings_by_canonical_key()
         self.card_service._ensure_local_catalog()
         if self.card_service.catalog.is_available():
             local_cards = [card.to_summary() for card in self.card_service.catalog.all_cards()]
@@ -2662,7 +2728,7 @@ class DeckService:
                 if card["card_type"] in {"Leader", "Base"}:
                     continue
                 if restrict_to_owned:
-                    owned_card = self._resolve_owned_printing(card)
+                    owned_card = self._resolve_owned_printing(card, owned_printings=owned_printings)
                     if owned_card is None:
                         continue
                     card = owned_card
@@ -2701,7 +2767,7 @@ class DeckService:
                 continue
             for card in result["cards"]:
                 if restrict_to_owned:
-                    card = self._resolve_owned_printing(card)
+                    card = self._resolve_owned_printing(card, owned_printings=owned_printings)
                     if card is None:
                         continue
                 if card["lookup_id"] not in seen:
@@ -2715,7 +2781,7 @@ class DeckService:
                 continue
             for card in result["cards"]:
                 if restrict_to_owned:
-                    card = self._resolve_owned_printing(card)
+                    card = self._resolve_owned_printing(card, owned_printings=owned_printings)
                     if card is None:
                         continue
                 if card["lookup_id"] not in seen:
@@ -2725,7 +2791,7 @@ class DeckService:
             fallback = self.card_service.search_cards(query="unit event", limit=60)
             for card in fallback["cards"]:
                 if restrict_to_owned:
-                    card = self._resolve_owned_printing(card)
+                    card = self._resolve_owned_printing(card, owned_printings=owned_printings)
                     if card is None:
                         continue
                 if card["lookup_id"] not in seen:

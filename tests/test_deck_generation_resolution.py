@@ -1,4 +1,5 @@
 import json
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -7,7 +8,7 @@ from swu_mcp.card_service import CardService
 from swu_mcp.card_identity import canonical_key
 from swu_mcp.catalog import LocalCatalog
 from swu_mcp.collection_service import CollectionService
-from swu_mcp.deck_service import DeckCardEntry, DeckService, ParsedDeck, TWIN_SUNS
+from swu_mcp.deck_service import DeckCardEntry, DeckService, ParsedDeck, PREMIER, TWIN_SUNS
 
 
 def _collection(path: Path, entries: list[dict[str, object]] | None = None) -> CollectionService:
@@ -474,6 +475,53 @@ def test_candidate_discovery_fails_locally_without_live_search(tmp_path: Path) -
         service._candidate_cards(goal_query="Force replay", available_aspects=set(), local_only=True)
 
 
+def test_owned_candidate_discovery_reuses_supplied_printing_cache(tmp_path: Path) -> None:
+    service = DeckService(
+        CardService(),
+        collection_service=_collection(tmp_path / "collection.json", entries=[]),
+    )
+    catalog_card = {
+        "Set": "SOR",
+        "Number": "020",
+        "Name": "Cached Unit",
+        "Type": "Unit",
+        "Aspects": ["Command"],
+        "Cost": "2",
+        "Power": "2",
+        "HP": "2",
+    }
+    owned_card = {
+        "lookup_id": "LOF/020",
+        "set_code": "LOF",
+        "number": "020",
+        "name": "Cached Unit",
+        "display_name": "Cached Unit",
+        "card_type": "Unit",
+        "aspects": ["Command"],
+        "traits": [],
+        "keywords": [],
+        "front_text": "",
+        "cost": "2",
+        "power": "2",
+        "hp": "2",
+    }
+    service.card_service.catalog = _local_catalog(tmp_path / "cards.json", [catalog_card])
+    service._owned_printings_by_canonical_key = lambda: pytest.fail("candidate discovery rebuilt owned printings")  # type: ignore[method-assign]
+
+    candidates = service._candidate_cards(
+        goal_query="cached",
+        available_aspects={"Command"},
+        only_owned=True,
+        local_only=True,
+        owned_printings={canonical_key(owned_card): owned_card},
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0]["lookup_id"] == "LOF/020"
+    assert candidates[0]["set_code"] == "LOF"
+    assert candidates[0]["number"] == "020"
+
+
 def test_suggestion_candidate_discovery_keeps_search_fallback() -> None:
     service = DeckService(CardService())
     fallback_card = {
@@ -548,6 +596,113 @@ def test_generation_analyzes_resolved_deck_without_lookup_card() -> None:
     generated = service.generate_deck(theme="Vigilance units")
 
     assert generated["analysis"]["deck_size"] >= 50
+
+
+def test_only_owned_generation_uses_cached_counts_for_quantity_caps(tmp_path: Path) -> None:
+    service = DeckService(
+        CardService(),
+        collection_service=_collection(tmp_path / "collection.json", entries=[]),
+    )
+    leader = {
+        "lookup_id": "TST/001",
+        "set_code": "TST",
+        "number": "001",
+        "name": "Command Leader",
+        "display_name": "Command Leader",
+        "card_type": "Leader",
+        "aspects": ["Command"],
+        "traits": [],
+        "keywords": [],
+        "front_text": "",
+    }
+    base = {
+        "lookup_id": "TST/002",
+        "set_code": "TST",
+        "number": "002",
+        "name": "Command Base",
+        "display_name": "Command Base",
+        "card_type": "Base",
+        "aspects": ["Command"],
+        "traits": [],
+        "keywords": [],
+        "front_text": "",
+    }
+
+    owned_main = {
+        "lookup_id": "TST/040",
+        "set_code": "TST",
+        "number": "040",
+        "name": "Mixed Source Unit",
+        "display_name": "Mixed Source Unit",
+        "card_type": "Unit",
+        "aspects": ["Command"],
+        "traits": [],
+        "keywords": [],
+        "front_text": "Draw a card. Deal 2 damage to a unit.",
+        "cost": "2",
+        "power": "5",
+        "hp": "5",
+    }
+    filler_cards = [
+        {
+            "lookup_id": f"TST/{100 + index:03d}",
+            "set_code": "TST",
+            "number": f"{100 + index:03d}",
+            "name": f"Filler Unit {index}",
+            "display_name": f"Filler Unit {index}",
+            "card_type": "Unit",
+            "aspects": ["Command"],
+            "traits": [],
+            "keywords": [],
+            "front_text": "",
+            "cost": "2",
+            "power": "1",
+            "hp": "1",
+        }
+        for index in range(47)
+    ]
+    all_cards = [owned_main, *filler_cards]
+    service.card_service.catalog = _local_catalog(
+        tmp_path / "cards.json",
+        [
+            {
+                "Set": card["set_code"],
+                "Number": card["number"],
+                "Name": card["name"],
+                "Type": card["card_type"],
+                "Aspects": card["aspects"],
+                "Traits": card["traits"],
+                "Keywords": card["keywords"],
+                "FrontText": card["front_text"],
+                "Cost": card["cost"],
+                "Power": card["power"],
+                "HP": card["hp"],
+            }
+            for card in all_cards
+        ],
+    )
+    service._pick_leaders = lambda **_: [leader]  # type: ignore[method-assign]
+    service._pick_base = lambda **_: base  # type: ignore[method-assign]
+    count_calls = 0
+
+    def owned_counts() -> Counter:
+        nonlocal count_calls
+        count_calls += 1
+        counts = Counter({canonical_key(card): 1 for card in filler_cards})
+        counts[canonical_key(owned_main)] = 3
+        return counts
+
+    service._owned_counts_by_canonical_key = owned_counts  # type: ignore[method-assign]
+    service._owned_printings_by_canonical_key = lambda: {canonical_key(card): card for card in all_cards}  # type: ignore[method-assign]
+
+    generated = service.generate_deck(
+        theme="command units",
+        format_name=PREMIER,
+        only_owned=True,
+    )
+
+    assert "\n3 Mixed Source Unit\n" in f"\n{generated['deck']}\n"
+    assert count_calls == 1
 
 
 def test_twin_suns_validation_rejects_duplicate_canonical_leaders() -> None:
