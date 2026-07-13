@@ -1716,11 +1716,10 @@ class DeckService:
             if token in text:
                 score += 3.0
         roles = set()
-        for leader in (first, second):
-            for package, role_map in LEADER_PACKAGE_ROLES.items():
-                for role_name, patterns in role_map.items():
-                    if any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns):
-                        roles.add((package, role_name))
+        for package, role_map in LEADER_PACKAGE_ROLES.items():
+            for role_name, patterns in role_map.items():
+                if any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns):
+                    roles.add((package, role_name))
         score += sum(5.0 for package, _ in roles if package in target_packages)
         score += len(set(first.get("aspects") or []) | set(second.get("aspects") or []))
         return score

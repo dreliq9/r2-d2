@@ -403,9 +403,9 @@ def swu_run_deck_goldfish(
 
 
 @mcp.tool(description=(
-    "Twin Suns only — brew a deck for every legal leader pairing in your "
-    "owned pool and rank them by composite score (synergy + interaction "
-    "density - off-aspect burden). Use moral='Heroism' or 'Villainy' to "
+    "Twin Suns only — fast-score and shortlist legal leader pairs in your "
+    "owned pool, then brew and rank finalists by composite score (synergy + "
+    "interaction density - off-aspect burden). Use moral='Heroism' or 'Villainy' to "
     "narrow. primary_aspects filters leaders whose aspects intersect the "
     "given list. include_decks=true returns full holoscan lists for the "
     "top_k results. Useful for surfacing leader pairs you wouldn't have "
