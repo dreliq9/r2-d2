@@ -1190,6 +1190,13 @@ class DeckService:
             key = str(candidate.get("lookup_id") or f"{candidate.get('set_code')}-{candidate.get('number')}")
             merged_by_id.setdefault(key, candidate)
         pool = list(merged_by_id.values())
+        thesis = build_deck_thesis(
+            theme=theme,
+            leaders=leaders,
+            base=base,
+            format_name=normalized_format,
+            meta_context=meta_context,
+        )
 
         main_cards: list[DeckCardEntry] = []
         # Track copies per canonical lookup_id (SET/NNN) — not per display_name —
@@ -2946,14 +2953,10 @@ def bucket_cost(cost: int | None) -> str:
 
 
 def detect_roles(card: dict[str, Any]) -> list[str]:
-    text = " ".join([str(card.get("front_text", "")), str(card.get("epic_action", "")), str(card.get("back_text", ""))]).lower()
-    roles: list[str] = []
-    for role, patterns in ROLE_PATTERNS.items():
-        if any(pattern in text for pattern in patterns):
-            roles.append(role)
-    if card.get("card_type") == "Unit":
-        roles.append("board_presence")
-    return roles
+    from .card_roles import roles_for_card
+
+    thesis = build_deck_thesis("", [], None, PREMIER)
+    return list(roles_for_card(card, thesis).roles)
 
 
 def build_style_notes(
