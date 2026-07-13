@@ -1612,6 +1612,47 @@ class DeckService:
             ),
         }
 
+    def optimize_deck(
+        self,
+        *,
+        decklist: str | dict[str, Any],
+        theme: str,
+        format_name: str = PREMIER,
+        only_owned: bool = False,
+        max_iterations: int = 20,
+    ) -> dict[str, Any]:
+        parsed = self.resolve_deck(self.parse_decklist(decklist=decklist, format_name=format_name))
+        leaders = [entry.card for entry in parsed.leaders if entry.card]
+        base = parsed.bases[0].card if parsed.bases and parsed.bases[0].card else None
+        thesis = build_deck_thesis(theme=theme, leaders=leaders, base=base, format_name=parsed.format_name)
+        pool = self._candidate_cards(
+            goal_query=compile_goal_query(theme),
+            available_aspects=collect_deck_aspects(parsed),
+            only_owned=only_owned,
+        )
+        from .card_roles import build_role_pools
+        from .deck_optimizer import optimize_card_list
+
+        result = optimize_card_list(
+            expand_entries(parsed.main_deck),
+            build_role_pools(pool, thesis),
+            thesis,
+            max_iterations=max_iterations,
+        )
+        return {
+            "initial_score": result.initial_score,
+            "final_score": result.final_score,
+            "swaps": [
+                {
+                    "removed": swap.removed,
+                    "added": swap.added,
+                    "reason": swap.reason,
+                    "score_delta": swap.score_delta,
+                }
+                for swap in result.swaps
+            ],
+        }
+
     def rank_leader_pairs(
         self,
         *,
