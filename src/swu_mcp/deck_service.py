@@ -1698,6 +1698,33 @@ class DeckService:
                 )
         return collapse_entries(resolved)
 
+    def _leader_pair_fast_score(
+        self,
+        first: dict[str, Any],
+        second: dict[str, Any],
+        *,
+        theme: str,
+        target_packages: set[str],
+    ) -> float:
+        text = " ".join(
+            str(card.get(key) or "")
+            for card in (first, second)
+            for key in ("display_name", "front_text", "back_text", "epic_action")
+        ).lower()
+        score = 0.0
+        for token in tokenize_text(theme):
+            if token in text:
+                score += 3.0
+        roles = set()
+        for leader in (first, second):
+            for package, role_map in LEADER_PACKAGE_ROLES.items():
+                for role_name, patterns in role_map.items():
+                    if any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns):
+                        roles.add((package, role_name))
+        score += sum(5.0 for package, _ in roles if package in target_packages)
+        score += len(set(first.get("aspects") or []) | set(second.get("aspects") or []))
+        return score
+
     def rank_leader_pairs(
         self,
         *,
@@ -1710,7 +1737,7 @@ class DeckService:
         base_name: str | None = None,
         include_decks: bool = False,
     ) -> dict[str, Any]:
-        """Brew a deck for every legal leader pairing and rank them.
+        """Shortlist legal leader pairs, then brew and rank the finalists.
 
         Twin Suns requires the two leaders to share Heroism or Villainy. This
         method enumerates all such pairs from the (optionally owned) leader
@@ -1845,6 +1872,27 @@ class DeckService:
         theme_lower = (theme or "").lower()
         target_packages = target_packages_for_theme(theme_lower)
 
+        scored_pairs = [
+            (
+                self._leader_pair_fast_score(
+                    first,
+                    second,
+                    theme=theme,
+                    target_packages=target_packages,
+                ),
+                first,
+                second,
+                shared,
+            )
+            for first, second, shared in pairs
+        ]
+        scored_pairs.sort(key=lambda item: item[0], reverse=True)
+        finalist_count = max(top_k * 3, top_k)
+        finalist_pairs = [
+            (first, second, shared)
+            for _, first, second, shared in scored_pairs[:finalist_count]
+        ]
+
         def _leader_text(leader: dict[str, Any]) -> str:
             return " ".join(
                 str(leader.get(k) or "") for k in
@@ -1887,7 +1935,7 @@ class DeckService:
                     detail[pkg] = sorted(combined) + ["[touched]"]
             return bonus, detail
 
-        # Brew + score each pair. Failures are logged but don't kill the run.
+        # Brew + score finalists. Failures are logged but don't kill the run.
         from .combo_packages import tag_card as _tag_card_for_fit
         from .config import settings as _settings
 
@@ -1951,7 +1999,7 @@ class DeckService:
             return bonus, per_pkg
 
         results: list[dict[str, Any]] = []
-        for first, second, shared in pairs:
+        for first, second, shared in finalist_pairs:
             pair_names = [str(first["display_name"]), str(second["display_name"])]
             try:
                 brew = self.generate_deck(
