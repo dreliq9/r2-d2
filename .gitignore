@@ -9,3 +9,4 @@ build/
 *.pyc
 data/catalog/
 qa_hard_run/
+.worktrees/
