@@ -115,7 +115,8 @@ class CardService:
             }
         except httpx.HTTPError as error:
             self._ensure_local_catalog()
-            cards = self.catalog.search(query, filters, resolved_limit)
+            local_query = "" if query.strip() == "*" else query
+            cards = self.catalog.search(local_query, filters, resolved_limit)
             if cards:
                 return {
                     "query": compiled_query,
