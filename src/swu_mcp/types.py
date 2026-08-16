@@ -12,9 +12,9 @@ so they accept both `CardRecord.to_summary()` (used by search) and
 
 from __future__ import annotations
 
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +150,101 @@ class SearchFilters(BaseModel):
         if self.hp:
             out["hp"] = f"{self.hp.op}{self.hp.value}"
         return out
+
+
+# ---------------------------------------------------------------------------
+# AI-led brew inputs
+# ---------------------------------------------------------------------------
+
+BrewFormat = Literal["premier", "twin_suns"]
+BrewContextIntent = Literal["candidates", "card-candidates", "session-summary", "revision-history"]
+ObjectiveDirection = Literal["min", "max"]
+
+MAX_BREW_SIMULATION_COUNT = 10_000
+MAX_BREW_TURN_HORIZONS = 20
+MAX_BREW_TURN_HORIZON = 80
+MAX_BREW_MULLIGAN_REDRAWS = 10
+MAX_BREW_PROBABILITY_CATEGORIES = 32
+MAX_BREW_CATEGORY_PRINTING_IDS = 80
+MAX_BREW_CANDIDATE_SWAPS = 20
+MAX_BREW_SWAP_CARD_CHANGES = 80
+
+
+class BrewCardChange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    card_id: str
+    quantity: int = Field(ge=1)
+    zone: Literal["main_deck", "sideboard"] = "main_deck"
+
+
+class BrewContextFilters(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    roles: list[str] = Field(default_factory=list)
+    packages: list[str] = Field(default_factory=list)
+    min_cost: int | None = Field(default=None, ge=0)
+    max_cost: int | None = Field(default=None, ge=0)
+    card_types: list[str] = Field(default_factory=list)
+    aspects: list[str] = Field(default_factory=list)
+    traits: list[str] = Field(default_factory=list)
+    keywords: list[str] = Field(default_factory=list)
+    text: str | None = None
+    minimum_owned: int | None = Field(default=None, ge=0)
+    inclusion_state: Literal["included", "excluded", "any"] = "any"
+    type: str | None = None
+    aspect: str | None = None
+    trait: str | None = None
+    query: str | None = None
+
+
+class BrewPackage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    target: int = Field(ge=0)
+
+
+class BrewRoleTargets(RootModel[dict[str, Annotated[int, Field(ge=0)]]]):
+    pass
+
+
+class BrewProbabilityCategory(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    printing_ids: list[str] = Field(
+        min_length=1,
+        max_length=MAX_BREW_CATEGORY_PRINTING_IDS,
+    )
+    kind: Literal["enabler", "payoff"] | None = None
+
+
+class BrewSwapSuggestion(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    suggestion_id: str = Field(min_length=1)
+    adds: list[BrewCardChange] = Field(
+        default_factory=list,
+        max_length=MAX_BREW_SWAP_CARD_CHANGES,
+    )
+    cuts: list[BrewCardChange] = Field(
+        default_factory=list,
+        max_length=MAX_BREW_SWAP_CARD_CHANGES,
+    )
+
+
+class BrewObjectiveDirections(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    legality: ObjectiveDirection | None = None
+    plan_reliability: ObjectiveDirection | None = None
+    curve_quality: ObjectiveDirection | None = None
+    interaction: ObjectiveDirection | None = None
+    card_advantage: ObjectiveDirection | None = None
+    resilience: ObjectiveDirection | None = None
+    synergy: ObjectiveDirection | None = None
+    matchup_fit: ObjectiveDirection | None = None
 
 
 # ---------------------------------------------------------------------------

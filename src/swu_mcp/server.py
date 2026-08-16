@@ -1,22 +1,39 @@
 from __future__ import annotations
 
-from typing import Annotated, Optional
+from typing import Annotated, Any, Optional
 
 from fastmcp import FastMCP
 from pydantic import Field
 
+from .ai_brew_service import AIBrewService
+from .ai_brew_session import BrewSessionStore
 from .card_service import CardService
 from .collection_service import CollectionService
 from .config import settings
 from .deck_service import DeckService
 from .game_service import GameService
 from .types import (
+    BrewCardChange,
+    BrewContextFilters,
+    BrewContextIntent,
+    BrewFormat,
+    BrewObjectiveDirections,
+    BrewPackage,
+    BrewProbabilityCategory,
+    BrewRoleTargets,
+    BrewSwapSuggestion,
     CardDetail,
     CardSummary,
     SearchFilters,
     SearchOrder,
     SearchResult,
     SortDirection,
+    MAX_BREW_CANDIDATE_SWAPS,
+    MAX_BREW_MULLIGAN_REDRAWS,
+    MAX_BREW_PROBABILITY_CATEGORIES,
+    MAX_BREW_SIMULATION_COUNT,
+    MAX_BREW_TURN_HORIZON,
+    MAX_BREW_TURN_HORIZONS,
 )
 
 mcp = FastMCP(
@@ -33,6 +50,36 @@ card_service = CardService()
 collection_service = CollectionService(settings.collection_path)
 deck_service = DeckService(card_service, collection_service=collection_service)
 game_service = GameService(deck_service)
+brew_store = BrewSessionStore(settings.brew_dir)
+ai_brew_service = AIBrewService(card_service, collection_service, deck_service, brew_store)
+
+
+def _dump_brew_card_changes(
+    changes: list[BrewCardChange] | None,
+) -> list[dict[str, Any]] | None:
+    if changes is None:
+        return None
+    serialized: list[dict[str, Any]] = []
+    for change in changes:
+        payload = change.model_dump(mode="json")
+        payload.pop("card_id", None)
+        payload["printing_id"] = change.card_id
+        serialized.append(payload)
+    return serialized
+
+
+def _dump_brew_swap_suggestions(
+    swaps: list[BrewSwapSuggestion] | None,
+) -> list[dict[str, Any]] | None:
+    if swaps is None:
+        return None
+    serialized: list[dict[str, Any]] = []
+    for swap in swaps:
+        payload = swap.model_dump(mode="json")
+        payload["adds"] = _dump_brew_card_changes(swap.adds)
+        payload["cuts"] = _dump_brew_card_changes(swap.cuts)
+        serialized.append(payload)
+    return serialized
 
 
 # ---------------------------------------------------------------------------
@@ -568,6 +615,159 @@ def swu_take_game_action(
 @mcp.tool(description="Let the AI pilot its side for one turn or until it ends the turn.")
 def swu_take_ai_turn(game_id: str, player_id: str = "opponent", max_actions: int = 8) -> dict:
     return game_service.take_ai_turn(game_id=game_id, player_id=player_id, max_actions=max_actions)
+
+
+# ---------------------------------------------------------------------------
+# AI-led brew tools — typed delegation surface
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(description=(
+    "Start a durable AI-led brew. The caller AI makes card choices; this tool records the "
+    "chosen leaders, base, theme, and constraints without generating a deck automatically."
+))
+def swu_start_ai_brew(
+    format_name: Annotated[BrewFormat, Field(description="Premier or Twin Suns.")],
+    leader_names: Annotated[list[str], Field(min_length=1, description="Selected leader names.")],
+    base_name: Annotated[str, Field(min_length=1, description="Selected base name.")],
+    theme: Annotated[str, Field(min_length=1, description="Caller-selected deck theme.")],
+    only_owned: bool = False,
+    allow_off_aspect: bool = False,
+    target_matchups: list[str] | None = None,
+    meta_context: dict[str, Any] | None = None,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    return ai_brew_service.start_brew(
+        format_name=format_name,
+        leader_names=leader_names,
+        base_name=base_name,
+        theme=theme,
+        only_owned=only_owned,
+        allow_off_aspect=allow_off_aspect,
+        target_matchups=target_matchups,
+        meta_context=meta_context,
+        session_id=session_id,
+    )
+
+
+@mcp.tool(description=(
+    "Read durable AI-brew context and caller-selected candidate filters. The caller AI makes "
+    "card choices; this tool only returns evidence and revision state."
+))
+def swu_get_brew_context(
+    session_id: Annotated[str, Field(min_length=1, description="Brew session ID.")],
+    intent: Annotated[BrewContextIntent, Field(description="Requested brew context view.")],
+    filters: Annotated[BrewContextFilters | None, Field(
+        default=None,
+        description="Structured caller-selected candidate filters.",
+    )] = None,
+    cursor: str | None = None,
+    limit: Annotated[int, Field(ge=1, le=100)] = 25,
+) -> dict[str, Any]:
+    return ai_brew_service.get_context(
+        session_id=session_id,
+        intent=intent,
+        filters=filters.model_dump(mode="json") if filters is not None else None,
+        cursor=cursor,
+        limit=limit,
+    )
+
+
+@mcp.tool(description=(
+    "Record explicit AI-brew choices as one immutable revision. The caller AI makes card choices; "
+    "this tool never applies evaluator suggestions automatically."
+))
+def swu_record_brew_decisions(
+    session_id: Annotated[str, Field(min_length=1, description="Brew session ID.")],
+    expected_revision: Annotated[int, Field(ge=0, description="Current revision required to write.")],
+    thesis: str | None = None,
+    packages: list[BrewPackage] | None = None,
+    role_targets: BrewRoleTargets | None = None,
+    additions: list[BrewCardChange] | None = None,
+    cuts: list[BrewCardChange] | None = None,
+    reservations: list[BrewCardChange] | None = None,
+    rejected_cards: list[BrewCardChange] | None = None,
+    rationale: str = "",
+    evidence_ids: list[str] | None = None,
+    advisory_report_id: str | None = None,
+    accept_stale_evidence: bool = False,
+    restore_revision: Annotated[int | None, Field(ge=0)] = None,
+    refresh_collection: bool = False,
+) -> dict[str, Any]:
+    return ai_brew_service.record_decisions(
+        session_id=session_id,
+        expected_revision=expected_revision,
+        thesis=thesis,
+        packages=[package.model_dump(mode="json") for package in packages] if packages is not None else None,
+        role_targets=role_targets.model_dump(mode="json") if role_targets is not None else None,
+        additions=_dump_brew_card_changes(additions),
+        cuts=_dump_brew_card_changes(cuts),
+        reservations=_dump_brew_card_changes(reservations),
+        rejected_cards=_dump_brew_card_changes(rejected_cards),
+        rationale=rationale,
+        evidence_ids=evidence_ids,
+        advisory_report_id=advisory_report_id,
+        accept_stale_evidence=accept_stale_evidence,
+        restore_revision=restore_revision,
+        refresh_collection=refresh_collection,
+    )
+
+
+@mcp.tool(description=(
+    "Evaluate an immutable AI-brew revision with advisory analysis. Suggestions are never applied "
+    "automatically; the caller AI must record any card choices in a later revision."
+))
+def swu_evaluate_ai_brew(
+    session_id: Annotated[str, Field(min_length=1, description="Brew session ID.")],
+    revision: Annotated[int | None, Field(ge=0)] = None,
+    turn_horizons: Annotated[
+        list[Annotated[int, Field(ge=0, le=MAX_BREW_TURN_HORIZON)]] | None,
+        Field(max_length=MAX_BREW_TURN_HORIZONS),
+    ] = None,
+    mulligan_redraws: Annotated[int, Field(ge=0, le=MAX_BREW_MULLIGAN_REDRAWS)] = 1,
+    simulation_seed: int = 1,
+    simulation_count: Annotated[int, Field(ge=1, le=MAX_BREW_SIMULATION_COUNT)] = 1000,
+    matchup_inputs: dict[str, Any] | None = None,
+    probability_categories: Annotated[
+        list[BrewProbabilityCategory] | None,
+        Field(max_length=MAX_BREW_PROBABILITY_CATEGORIES),
+    ] = None,
+    candidate_swaps: Annotated[
+        list[BrewSwapSuggestion] | None,
+        Field(max_length=MAX_BREW_CANDIDATE_SWAPS),
+    ] = None,
+    objective_directions: BrewObjectiveDirections | None = None,
+) -> dict[str, Any]:
+    return ai_brew_service.evaluate_brew(
+        session_id=session_id,
+        revision=revision,
+        turn_horizons=turn_horizons,
+        mulligan_redraws=mulligan_redraws,
+        simulation_seed=simulation_seed,
+        simulation_count=simulation_count,
+        matchup_inputs=matchup_inputs,
+        probability_categories=[category.model_dump(mode="json") for category in probability_categories]
+        if probability_categories is not None
+        else None,
+        candidate_swaps=_dump_brew_swap_suggestions(candidate_swaps),
+        objective_directions=objective_directions.model_dump(mode="json", exclude_none=True)
+        if objective_directions is not None
+        else None,
+    )
+
+
+@mcp.tool(description=(
+    "Finalize the selected AI-brew revision and export it. Finalization fails unless the selected "
+    "revision is legal and current; it never accepts suggestions automatically."
+))
+def swu_finalize_ai_brew(
+    session_id: Annotated[str, Field(min_length=1, description="Brew session ID.")],
+    expected_revision: Annotated[int, Field(ge=0, description="Current revision required to finalize.")],
+) -> dict[str, Any]:
+    return ai_brew_service.finalize_brew(
+        session_id=session_id,
+        expected_revision=expected_revision,
+    )
 
 
 def main() -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 from dataclasses import dataclass
 from functools import lru_cache
@@ -9,6 +10,11 @@ from pathlib import Path
 from .card_identity import CanonicalCardKey, OwnedPrinting, canonical_key
 from .catalog import LocalCatalog
 from .config import settings
+
+
+ABSENT_COLLECTION_SNAPSHOT = "absent:v1:" + hashlib.sha256(
+    b"swu-mcp:collection-absent:v1"
+).hexdigest()
 
 
 def _cache_filename(set_code: str, card_number: str) -> str:
@@ -78,12 +84,82 @@ class OwnedCard:
     foil_count: int
 
 
+@dataclass(frozen=True)
+class CollectionSnapshot:
+    """Immutable collection entries and digest parsed from one byte payload."""
+
+    storage_path: Path
+    sha256: str
+    entries: tuple[OwnedCard, ...]
+
+    @classmethod
+    def read(cls, storage_path: str | Path) -> CollectionSnapshot:
+        path = Path(storage_path)
+        try:
+            payload_bytes = path.read_bytes()
+        except FileNotFoundError:
+            return cls(
+                storage_path=path,
+                sha256=ABSENT_COLLECTION_SNAPSHOT,
+                entries=(),
+            )
+
+        digest = hashlib.sha256(payload_bytes).hexdigest()
+        try:
+            payload = json.loads(payload_bytes)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Configured collection is not valid JSON: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("Configured collection JSON root must be an object.")
+        rows = payload.get("entries", [])
+        if not isinstance(rows, list):
+            raise ValueError("Configured collection entries must be a list.")
+
+        entries: list[OwnedCard] = []
+        for index, row in enumerate(rows):
+            if not isinstance(row, dict):
+                raise ValueError(f"Configured collection entry {index} must be an object.")
+            set_code = str(row.get("set_code", "")).strip().upper()
+            card_number = _normalize_number(row.get("card_number", ""))
+            if not set_code or not card_number:
+                raise ValueError(
+                    f"Configured collection entry {index} needs set_code and card_number."
+                )
+            count = row.get("count", 0)
+            foil_count = row.get("foil_count", 0)
+            if (
+                not isinstance(count, int)
+                or isinstance(count, bool)
+                or count < 0
+                or not isinstance(foil_count, int)
+                or isinstance(foil_count, bool)
+                or foil_count < 0
+            ):
+                raise ValueError(
+                    f"Configured collection entry {index} counts must be nonnegative integers."
+                )
+            entries.append(
+                OwnedCard(
+                    set_code=set_code,
+                    card_number=card_number,
+                    count=count,
+                    foil_count=foil_count,
+                )
+            )
+        return cls(storage_path=path, sha256=digest, entries=tuple(entries))
+
+
 class CollectionService:
     def __init__(self, storage_path: Path) -> None:
         self.storage_path = Path(storage_path)
         self._entries: dict[tuple[str, str], OwnedCard] = {}
         self._entry_metadata: dict[tuple[str, str], dict] = {}
         self._loaded = False
+
+    def immutable_snapshot(self) -> CollectionSnapshot:
+        """Read and parse one authoritative collection payload without using the cache."""
+
+        return CollectionSnapshot.read(self.storage_path)
 
     def _load_from_disk(self) -> None:
         if self._loaded:

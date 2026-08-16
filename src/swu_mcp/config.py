@@ -22,6 +22,13 @@ def _default_collection_path() -> Path:
     return Path.home() / ".swu-mcp" / "collection.json"
 
 
+def _default_brew_dir() -> Path:
+    from_env = os.getenv("SWU_MCP_BREW_DIR")
+    if from_env:
+        return Path(from_env).expanduser()
+    return Path.home() / ".swu-mcp" / "brews"
+
+
 def _default_cache_dir() -> Path:
     from_env = os.getenv("SWU_MCP_CACHE_DIR")
     if from_env:
@@ -39,6 +46,7 @@ class Settings:
     cache_dir: Path = _default_cache_dir()
     default_limit: int = int(os.getenv("SWU_MCP_DEFAULT_LIMIT", "10"))
     collection_path: Path = _default_collection_path()
+    brew_dir: Path = _default_brew_dir()
 
 
 settings = Settings()
